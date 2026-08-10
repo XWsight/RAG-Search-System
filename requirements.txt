@@ -1,9 +1,8 @@
-langchain
-langchain-community
-langchain-huggingface
-langchain-openai
-langchain-text-splitters
-sentence-transformers
-pypdf
-python-dotenv
-streamlit
+gradio==6.22.0
+langchain-chroma==1.1.0
+langchain-huggingface==1.2.2
+langchain-text-splitters==1.1.2
+numpy==2.4.6
+python-dotenv==1.2.2
+requests==2.34.2
+sentence-transformers==5.7.0

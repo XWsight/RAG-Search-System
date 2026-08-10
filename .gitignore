@@ -1,14 +1,8 @@
-# Python
-.venv/
-venv/
-__pycache__/
-*.py[cod]
-*.egg-info/
-
-# 密钥与环境变量
 .env
-*.key
-
-# 系统文件
-.DS_Store
-Thumbs.db
+.venv/
+__pycache__/
+*.pyc
+.gradio/
+chroma_db/
+rag_chroma_db/
+.cache/
