@@ -42,7 +42,7 @@ class AnswerBenchmarkCommandTests(unittest.TestCase):
             with (
                 patch.object(benchmark_answers, "Settings", _Settings),
                 patch.object(benchmark_answers, "ZhipuChatModel", _Model),
-                patch.object(benchmark_answers, "load_dotenv", return_value=True),
+                patch.object(benchmark_answers, "_load_evaluation_environment"),
             ):
                 exit_code = benchmark_answers.main(
                     [
@@ -80,7 +80,7 @@ class AnswerBenchmarkCommandTests(unittest.TestCase):
             with (
                 patch.object(benchmark_answers, "Settings", _Settings),
                 patch.object(benchmark_answers, "ZhipuChatModel", _Model),
-                patch.object(benchmark_answers, "load_dotenv", return_value=True),
+                patch.object(benchmark_answers, "_load_evaluation_environment"),
             ):
                 exit_code = benchmark_answers.main(
                     [

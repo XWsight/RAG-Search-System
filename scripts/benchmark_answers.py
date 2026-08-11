@@ -6,8 +6,6 @@ import argparse
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rag_system.answer_benchmark import load_answer_benchmark, run_answer_benchmark  # noqa: E402
@@ -61,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         cases = load_answer_benchmark(args.dataset)
     if not args.dotenv.is_file():
         raise SystemExit("evaluation environment file does not exist")
-    load_dotenv(args.dotenv, override=True)
+    _load_evaluation_environment(args.dotenv)
     settings = Settings().validate()
     model = ZhipuChatModel(settings)
     if not model.available:
@@ -100,6 +98,14 @@ def main(argv: list[str] | None = None) -> int:
                 )
             return 3
     return 0
+
+
+def _load_evaluation_environment(path: Path) -> None:
+    """Import the runtime-only dotenv dependency when a live run actually starts."""
+
+    from dotenv import load_dotenv
+
+    load_dotenv(path, override=True)
 
 
 if __name__ == "__main__":
