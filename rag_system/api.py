@@ -14,217 +14,49 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from rag_system.catalog import (
-    CatalogSchemaError,
-    CatalogStorageError,
-    CatalogValidationError,
-    InvalidStatusTransitionError,
-    KnowledgeBaseRecord,
-    KnowledgeBaseStatus,
-    KnowledgeBaseUnavailableError,
+from rag_system.api_contract import (
+    RESOURCE_PATTERN as _RESOURCE_PATTERN,
+    SESSION_PATTERN as _SESSION_PATTERN,
+    AnswerPayload,
+    AnswerResponse,
+    DeleteResponse,
+    DocumentResponse,
+    ErrorDetail,
+    ErrorEnvelope,
+    HealthResponse,
+    JobResponse,
+    KnowledgeBaseListResponse,
+    KnowledgeBaseResponse,
+    KnowledgeBaseSubmissionResponse,
+    answer_response,
+    job_response,
+    knowledge_base_response,
 )
-from rag_system.domain import AnswerClaim, AnswerRequest, AnswerResult, Citation, Route
-from rag_system.file_store import (
-    DuplicateResourceError,
-    FileStoreError,
-    FileStoreIOError,
-    FileStoreSecurityError,
-    InvalidFileNameError,
-    InvalidResourceIdError,
-    ResourceNotFoundError,
-    StorageLimitError,
+from rag_system.api_errors import (
+    APPLICATION_ERROR_TYPES,
+    ApiBoundaryError,
+    classify_application_error,
+    classify_http_error,
 )
-from rag_system.grounding import (
-    CITATION_ID_PATTERN,
-    MAX_ANSWER_CLAIMS,
-    MAX_CITATION_ID_CHARACTERS,
-    MAX_CLAIM_CHARACTERS,
-)
-from rag_system.idempotency import (
-    IdempotencyCapacityError,
-    IdempotencyConflictError,
-    IdempotencyError,
-    IdempotencySchemaError,
-    IdempotencyStorageError,
-    IdempotencyUnavailableError,
-    IdempotencyValidationError,
-)
-from rag_system.jobs import (
-    JobCapacityError,
-    JobError,
-    JobManagerShutdownError,
-    JobNotFoundError,
-    JobSnapshot,
-    JobStatus,
-    JobSubmissionError,
-)
-from rag_system.loaders import DocumentLoadError
+from rag_system.application import RagApplication, UploadDocument
+from rag_system.domain import AnswerRequest
 from rag_system.observability import JsonEventLogger, TraceContext
-from rag_system.platform import (
-    IdempotencyInProgressError,
-    KnowledgeBaseNotReadyError,
-    PlatformError,
-    PlatformIntegrityError,
-    PlatformUnavailableError,
-    PlatformValidationError,
-    RagPlatform,
-    UploadDocument,
-)
-from rag_system.provider_errors import ProviderError
 from rag_system.rate_limit import RateLimitDecision, TokenBucketRateLimiter
-from rag_system.security import DocumentValidationError
 from rag_system.tenancy import (
     ApiKeyAuthenticator,
     AuthenticationError,
-    AuthorizationError,
     Principal,
 )
 from rag_system.web_ui import mount_web_ui
 
 
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,127})?")
-_RESOURCE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-_SESSION_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-CitationId = Annotated[
-    str,
-    Field(
-        min_length=2,
-        max_length=MAX_CITATION_ID_CHARACTERS,
-        pattern=CITATION_ID_PATTERN,
-    ),
-]
 _UPLOAD_READ_SIZE = 64 * 1024
 _PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
-
-
-class StrictModel(BaseModel):
-    """Forbid unknown input fields and implicit type coercion."""
-
-    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
-
-
-class ErrorDetail(StrictModel):
-    code: str = Field(min_length=1, max_length=64)
-    message: str = Field(min_length=1, max_length=256)
-    trace_id: str = Field(min_length=1, max_length=128)
-    request_id: str = Field(min_length=1, max_length=128)
-
-
-class ErrorEnvelope(StrictModel):
-    error: ErrorDetail
-
-
-class HealthResponse(StrictModel):
-    status: Literal["ok", "ready"]
-
-
-class DocumentResponse(StrictModel):
-    name: str = Field(min_length=1, max_length=255)
-    size_bytes: int = Field(ge=0)
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-
-class KnowledgeBaseResponse(StrictModel):
-    id: str = Field(min_length=1, max_length=128)
-    name: str = Field(min_length=1, max_length=200)
-    status: KnowledgeBaseStatus
-    documents: tuple[DocumentResponse, ...]
-    document_count: int = Field(ge=0)
-    total_bytes: int = Field(ge=0)
-    chunk_count: int = Field(ge=0)
-    error_code: str | None = Field(default=None, max_length=64)
-    created_at: float = Field(ge=0)
-    updated_at: float = Field(ge=0)
-    version: int = Field(ge=1)
-
-
-class KnowledgeBaseSubmissionResponse(StrictModel):
-    knowledge_base: KnowledgeBaseResponse
-    job_id: str = Field(min_length=1, max_length=128)
-    replayed: bool
-
-
-class KnowledgeBaseListResponse(StrictModel):
-    items: tuple[KnowledgeBaseResponse, ...]
-    count: int = Field(ge=0)
-    limit: int = Field(ge=1, le=100)
-    offset: int = Field(ge=0)
-
-
-class DeleteResponse(StrictModel):
-    deleted: bool
-
-
-class JobResponse(StrictModel):
-    id: str = Field(min_length=1, max_length=128)
-    status: JobStatus
-    created_at: float = Field(ge=0)
-    updated_at: float = Field(ge=0)
-    started_at: float | None = Field(default=None, ge=0)
-    finished_at: float | None = Field(default=None, ge=0)
-    result: dict[str, Any] | None = None
-    error_code: str | None = Field(default=None, max_length=64)
-
-
-class AnswerPayload(StrictModel):
-    knowledge_base_id: str = Field(min_length=1, max_length=128, pattern=_RESOURCE_PATTERN)
-    question: str = Field(min_length=1, max_length=10_000)
-    session_id: str = Field(min_length=1, max_length=128, pattern=_SESSION_PATTERN)
-    allow_cloud: bool = False
-    allow_web: bool = False
-    deep_research: bool = False
-
-
-class RouteResponse(StrictModel):
-    route: Route
-    confidence: float = Field(ge=0, le=1)
-
-
-class CitationResponse(StrictModel):
-    id: CitationId
-    source_name: str = Field(min_length=1, max_length=255)
-    excerpt: str = Field(max_length=8_000)
-    url: str = Field(default="", max_length=4_096)
-    score: float | None = None
-
-
-class AnswerClaimResponse(StrictModel):
-    text: str = Field(min_length=1, max_length=MAX_CLAIM_CHARACTERS)
-    citation_ids: tuple[CitationId, ...] = Field(
-        min_length=1,
-        max_length=MAX_ANSWER_CLAIMS,
-    )
-
-
-class AnswerResponse(StrictModel):
-    answer: str = Field(max_length=200_000)
-    decision: RouteResponse
-    claims: tuple[AnswerClaimResponse, ...] = Field(max_length=MAX_ANSWER_CLAIMS)
-    citations: tuple[CitationResponse, ...]
-    trace_id: str = Field(min_length=1, max_length=128)
-    latency_ms: float = Field(ge=0)
-
-
-class ApiBoundaryError(RuntimeError):
-    """An error whose code and generic message are safe for clients."""
-
-    def __init__(
-        self,
-        status_code: int,
-        code: str,
-        message: str,
-        *,
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        super().__init__(code)
-        self.status_code = status_code
-        self.code = code
-        self.safe_message = message
-        self.headers = dict(headers or {})
 
 
 ReadinessCheck = Callable[[], bool]
@@ -238,7 +70,7 @@ def _error_responses(*status_codes: int) -> dict[int, dict[str, object]]:
 
 def create_app(
     *,
-    platform: RagPlatform,
+    platform: RagApplication,
     authenticator: ApiKeyAuthenticator,
     rate_limiter: TokenBucketRateLimiter,
     logger: JsonEventLogger,
@@ -440,7 +272,7 @@ def create_app(
 
     @app.exception_handler(StarletteHTTPException)
     async def http_handler(request: Request, error: StarletteHTTPException) -> JSONResponse:
-        code, message = _http_error(error.status_code)
+        code, message = classify_http_error(error.status_code)
         return _error_response(
             request,
             status_code=error.status_code,
@@ -449,7 +281,7 @@ def create_app(
         )
 
     async def application_error_handler(request: Request, error: Exception) -> JSONResponse:
-        status_code, code, message = _classify_application_error(error)
+        status_code, code, message = classify_application_error(error)
         level = logging.ERROR if status_code >= 500 else logging.WARNING
         _safe_emit(
             logger,
@@ -465,20 +297,7 @@ def create_app(
             message=message,
         )
 
-    for error_type in (
-        AuthenticationError,
-        AuthorizationError,
-        PlatformError,
-        CatalogValidationError,
-        CatalogSchemaError,
-        CatalogStorageError,
-        KnowledgeBaseUnavailableError,
-        FileStoreError,
-        IdempotencyError,
-        JobError,
-        ProviderError,
-        DocumentValidationError,
-    ):
+    for error_type in APPLICATION_ERROR_TYPES:
         app.add_exception_handler(error_type, application_error_handler)
     app.add_exception_handler(Exception, application_error_handler)
 
@@ -604,7 +423,7 @@ def create_app(
             idempotency_key=idempotency_key.strip(),
         )
         return KnowledgeBaseSubmissionResponse(
-            knowledge_base=_knowledge_base_response(submission.knowledge_base),
+            knowledge_base=knowledge_base_response(submission.knowledge_base),
             job_id=submission.job_id.value,
             replayed=submission.replayed,
         )
@@ -625,7 +444,7 @@ def create_app(
         request.state.operation = "index"
         consume(request, principal)
         records = platform.list_knowledge_bases(principal, limit=limit, offset=offset)
-        items = tuple(_knowledge_base_response(record) for record in records)
+        items = tuple(knowledge_base_response(record) for record in records)
         return KnowledgeBaseListResponse(items=items, count=len(items), limit=limit, offset=offset)
 
     @app.get(
@@ -642,7 +461,7 @@ def create_app(
     ) -> KnowledgeBaseResponse:
         request.state.operation = "index"
         consume(request, principal)
-        return _knowledge_base_response(platform.get_knowledge_base(principal, knowledge_base_id))
+        return knowledge_base_response(platform.get_knowledge_base(principal, knowledge_base_id))
 
     @app.delete(
         "/v1/knowledge-bases/{knowledge_base_id}",
@@ -675,7 +494,7 @@ def create_app(
     ) -> JobResponse:
         request.state.operation = "index"
         consume(request, principal)
-        return _job_response(platform.get_job(principal, job_id))
+        return job_response(platform.get_job(principal, job_id))
 
     @app.delete(
         "/v1/jobs/{job_id}",
@@ -691,7 +510,7 @@ def create_app(
     ) -> JobResponse:
         request.state.operation = "index"
         consume(request, principal)
-        return _job_response(platform.cancel_job(principal, job_id))
+        return job_response(platform.cancel_job(principal, job_id))
 
     @app.post(
         "/v1/answers",
@@ -719,7 +538,7 @@ def create_app(
             ),
         )
         request.state.metric_route = result.decision.route.value
-        return _answer_response(result, trace_id=_context_from_request(request).trace_id)
+        return answer_response(result, trace_id=_context_from_request(request).trace_id)
 
     @app.delete(
         "/v1/knowledge-bases/{knowledge_base_id}/sessions/{session_id}",
@@ -857,67 +676,6 @@ def _install_receive_limit(request: Request, body_limit: int) -> None:
     request._receive = limited_receive
 
 
-def _knowledge_base_response(record: KnowledgeBaseRecord) -> KnowledgeBaseResponse:
-    documents = tuple(
-        DocumentResponse(name=item.display_name, size_bytes=item.size_bytes, sha256=item.sha256)
-        for item in record.documents
-    )
-    return KnowledgeBaseResponse(
-        id=record.resource_id,
-        name=record.display_name,
-        status=record.status,
-        documents=documents,
-        document_count=record.document_count,
-        total_bytes=record.total_bytes,
-        chunk_count=record.chunk_count,
-        error_code=record.error_code.value if record.error_code is not None else None,
-        created_at=record.created_at,
-        updated_at=record.updated_at,
-        version=record.version,
-    )
-
-
-def _job_response(snapshot: JobSnapshot) -> JobResponse:
-    return JobResponse(
-        id=snapshot.job_id.value,
-        status=snapshot.status,
-        created_at=snapshot.created_at,
-        updated_at=snapshot.updated_at,
-        started_at=snapshot.started_at,
-        finished_at=snapshot.finished_at,
-        result=snapshot.result,
-        error_code=snapshot.error_code or None,
-    )
-
-
-def _citation_response(citation: Citation) -> CitationResponse:
-    return CitationResponse(
-        id=citation.citation_id,
-        source_name=citation.source_name,
-        excerpt=citation.excerpt,
-        url=citation.url,
-        score=citation.score,
-    )
-
-
-def _claim_response(claim: AnswerClaim) -> AnswerClaimResponse:
-    return AnswerClaimResponse(text=claim.text, citation_ids=claim.citation_ids)
-
-
-def _answer_response(result: AnswerResult, *, trace_id: str) -> AnswerResponse:
-    return AnswerResponse(
-        answer=result.answer,
-        decision=RouteResponse(
-            route=result.decision.route,
-            confidence=max(0.0, min(1.0, result.decision.confidence)),
-        ),
-        claims=tuple(_claim_response(item) for item in result.claims),
-        citations=tuple(_citation_response(item) for item in result.citations),
-        trace_id=trace_id,
-        latency_ms=max(0.0, result.latency_ms),
-    )
-
-
 def _request_context(request: Request) -> TraceContext:
     trace_id = _safe_incoming_identifier(request.headers.get("X-Trace-ID"))
     request_id = _safe_incoming_identifier(request.headers.get("X-Request-ID"))
@@ -972,85 +730,6 @@ def _error_response(
     return JSONResponse(status_code=status_code, content=envelope.model_dump(mode="json"), headers=safe_headers)
 
 
-def _classify_application_error(error: Exception) -> tuple[int, str, str]:
-    if isinstance(error, AuthenticationError):
-        return 401, "authentication_failed", "Authentication failed."
-    if isinstance(error, AuthorizationError):
-        return 404, "resource_unavailable", "Resource is unavailable."
-    if isinstance(
-        error,
-        (KnowledgeBaseUnavailableError, JobNotFoundError, ResourceNotFoundError),
-    ):
-        return 404, "resource_unavailable", "Resource is unavailable."
-    if isinstance(error, IdempotencyConflictError):
-        return 409, "idempotency_conflict", "The idempotency key conflicts with this request."
-    if isinstance(error, IdempotencyInProgressError):
-        return 409, "idempotency_in_progress", "The matching request is still in progress."
-    if isinstance(error, (DuplicateResourceError, InvalidStatusTransitionError)):
-        return 409, "resource_conflict", "The resource cannot be changed in its current state."
-    if isinstance(error, KnowledgeBaseNotReadyError):
-        return 409, "knowledge_base_not_ready", "The knowledge base is not ready."
-    if isinstance(error, StorageLimitError):
-        return 413, "storage_limit_exceeded", "The storage limit was exceeded."
-    if isinstance(
-        error,
-        (
-            PlatformValidationError,
-            CatalogValidationError,
-            FileStoreSecurityError,
-            IdempotencyValidationError,
-            InvalidFileNameError,
-            InvalidResourceIdError,
-            DocumentLoadError,
-            DocumentValidationError,
-        ),
-    ):
-        return 422, "invalid_request", "The request could not be validated."
-    if isinstance(
-        error,
-        (
-            IdempotencyCapacityError,
-            IdempotencyUnavailableError,
-            IdempotencySchemaError,
-            IdempotencyStorageError,
-            JobCapacityError,
-            JobSubmissionError,
-            JobManagerShutdownError,
-        ),
-    ):
-        return 503, "service_unavailable", "The service is temporarily unavailable."
-    if isinstance(
-        error,
-        (
-            PlatformUnavailableError,
-            CatalogSchemaError,
-            CatalogStorageError,
-            FileStoreIOError,
-            ProviderError,
-        ),
-    ):
-        return 503, "service_unavailable", "The service is temporarily unavailable."
-    if isinstance(error, PlatformIntegrityError):
-        return 500, "internal_error", "The request could not be completed."
-    return 500, "internal_error", "The request could not be completed."
-
-
-def _http_error(status_code: int) -> tuple[str, str]:
-    if status_code == 404:
-        return "resource_unavailable", "Resource is unavailable."
-    if status_code == 405:
-        return "method_not_allowed", "The method is not allowed for this resource."
-    if status_code == 413:
-        return "upload_limit_exceeded", "The upload exceeds the configured limits."
-    if status_code in {400, 422}:
-        return "invalid_request", "The request could not be validated."
-    if status_code == 401:
-        return "authentication_failed", "Authentication failed."
-    if status_code == 403:
-        return "forbidden", "The operation is not permitted."
-    return "request_failed", "The request could not be completed."
-
-
 def _operation_for(method: str, path: str) -> str:
     if path.startswith("/health") or path == "/metrics":
         return "health"
@@ -1074,7 +753,7 @@ def _outcome_for(status_code: int) -> str:
 
 
 def _record_request_metrics(
-    platform: RagPlatform,
+    platform: RagApplication,
     operation: str,
     outcome: str,
     route: str,

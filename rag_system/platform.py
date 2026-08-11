@@ -6,18 +6,28 @@ import hashlib
 import threading
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
-from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, BinaryIO
+from dataclasses import replace
+from typing import TYPE_CHECKING
 
+from rag_system.application import (
+    IdempotencyInProgressError,
+    KnowledgeBaseNotReadyError,
+    KnowledgeBaseSubmission,
+    PlatformError,
+    PlatformIntegrityError,
+    PlatformUnavailableError,
+    PlatformValidationError,
+    UploadDocument,
+)
+from rag_system.assets import KnowledgeBaseAssets
 from rag_system.catalog import (
-    DocumentManifest,
     KnowledgeBaseCatalog,
     KnowledgeBaseErrorCode,
     KnowledgeBaseRecord,
     KnowledgeBaseStatus,
 )
 from rag_system.config import Settings
+from rag_system.coordination import ResourceJobRegistry, ResourceLockPool
 from rag_system.domain import AnswerRequest, AnswerResult
 from rag_system.file_store import FileStoreError, TenantFileStore
 from rag_system.idempotency import (
@@ -27,58 +37,19 @@ from rag_system.idempotency import (
 )
 from rag_system.jobs import (
     CancellationToken,
-    JobCancelledError,
     JobError,
     JobId,
     JobManager,
     JobNotFoundError,
     JobSnapshot,
 )
+from rag_system.indexing import KnowledgeBaseIndexer
 from rag_system.metrics import OperationalMetrics, create_operational_metrics
-from rag_system.security import DocumentValidationError
+from rag_system.submission import UploadBatchPreparer
 from rag_system.tenancy import Principal
 
 if TYPE_CHECKING:
     from rag_system.service import RagService
-
-
-class PlatformError(RuntimeError):
-    """Base class for errors that can be safely classified by an API."""
-
-    code = "platform_error"
-
-
-class PlatformValidationError(PlatformError, ValueError):
-    code = "invalid_request"
-
-
-class KnowledgeBaseNotReadyError(PlatformError):
-    code = "knowledge_base_not_ready"
-
-
-class PlatformIntegrityError(PlatformError):
-    code = "storage_integrity_error"
-
-
-class PlatformUnavailableError(PlatformError):
-    code = "platform_unavailable"
-
-
-class IdempotencyInProgressError(PlatformError):
-    code = "idempotency_in_progress"
-
-
-@dataclass(frozen=True, slots=True)
-class UploadDocument:
-    display_name: str
-    source: bytes | bytearray | memoryview | BinaryIO
-
-
-@dataclass(frozen=True, slots=True)
-class KnowledgeBaseSubmission:
-    knowledge_base: KnowledgeBaseRecord
-    job_id: JobId
-    replayed: bool = False
 
 
 class RagPlatform:
@@ -101,8 +72,6 @@ class RagPlatform:
         metrics: OperationalMetrics | None = None,
         document_id_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
     ) -> None:
-        if not callable(document_id_factory):
-            raise TypeError("document_id_factory must be callable")
         self.settings = settings.validate()
         self.service = service
         self.catalog = catalog
@@ -110,10 +79,21 @@ class RagPlatform:
         self.jobs = jobs
         self.idempotency = idempotency
         self.metrics = metrics or create_operational_metrics()
-        self._document_id_factory = document_id_factory
-        self._resource_locks = tuple(threading.RLock() for _ in range(64))
-        self._job_map_lock = threading.RLock()
-        self._job_by_resource: dict[tuple[str, str], JobId] = {}
+        self._assets = KnowledgeBaseAssets(file_store)
+        self._indexing = KnowledgeBaseIndexer(
+            service=service,
+            catalog=catalog,
+            assets=self._assets,
+            metrics=self.metrics,
+        )
+        self._uploads = UploadBatchPreparer(
+            max_file_bytes=self.settings.max_file_bytes,
+            max_total_bytes=self.settings.max_total_bytes,
+            max_documents=self.settings.max_documents,
+            document_id_factory=document_id_factory,
+        )
+        self._resource_locks = ResourceLockPool(slots=64)
+        self._jobs_by_resource = ResourceJobRegistry()
         self._answer_slots = threading.BoundedSemaphore(
             self.settings.max_concurrent_answers
         )
@@ -126,15 +106,11 @@ class RagPlatform:
         documents: Sequence[UploadDocument],
         idempotency_key: str,
     ) -> KnowledgeBaseSubmission:
-        uploads = self._materialize_uploads(documents)
-        if not uploads:
-            raise PlatformValidationError("at least one document is required")
-        if len(uploads) > self.settings.max_documents:
-            raise PlatformValidationError("document count exceeds the configured limit")
+        uploads = self._uploads.prepare(documents)
         if not isinstance(idempotency_key, str) or not idempotency_key.strip():
             raise PlatformValidationError("idempotency key is required")
 
-        request_digest = self._create_request_digest(display_name, uploads)
+        request_digest = self._uploads.request_digest(display_name, uploads)
         reservation = self.idempotency.reserve(
             principal,
             "knowledge_base.create",
@@ -156,7 +132,7 @@ class RagPlatform:
                     record.status is KnowledgeBaseStatus.CANCELLING
                     and self._job_is_terminal(principal, current_job)
                 ):
-                    record = self._converge_cancel_intent(principal, record)
+                    record = self._indexing.converge_cancel_intent(principal, record)
                     current_job = None
                 if current_job is None and record.status in {
                     KnowledgeBaseStatus.READY,
@@ -184,7 +160,7 @@ class RagPlatform:
                 record.status is KnowledgeBaseStatus.CANCELLING
                 and self._job_is_terminal(principal, current_job)
             ):
-                record = self._converge_cancel_intent(principal, record)
+                record = self._indexing.converge_cancel_intent(principal, record)
                 current_job = None
             if current_job is None and record.status in {
                 KnowledgeBaseStatus.READY,
@@ -214,41 +190,17 @@ class RagPlatform:
                 display_name,
                 idempotency_reservation_id=reservation.reservation_id,
             )
-            planned: list[tuple[str, UploadDocument, DocumentManifest]] = []
-            for upload in uploads:
-                document_resource_id = self._new_document_id()
-                relative_path = self.file_store.planned_relative_path(
-                    principal.tenant_id.value,
-                    document_resource_id,
-                    upload.display_name,
-                )
-                content = bytes(upload.source)
-                manifest_item = DocumentManifest(
-                    display_name=PurePosixPath(relative_path).name,
-                    relative_path=relative_path,
-                    size_bytes=len(content),
-                    sha256=hashlib.sha256(content).hexdigest(),
-                )
-                planned.append((document_resource_id, upload, manifest_item))
+            planned = self._assets.plan(
+                principal,
+                uploads,
+                new_document_id=self._uploads.new_document_id,
+            )
             record = self.catalog.replace_manifest(
                 principal,
                 record.resource_id,
-                tuple(item for _, _, item in planned),
+                tuple(item.manifest for item in planned),
             )
-            for document_resource_id, upload, manifest_item in planned:
-                saved = self.file_store.save(
-                    principal.tenant_id.value,
-                    document_resource_id,
-                    upload.display_name,
-                    upload.source,
-                )
-                if (
-                    saved.display_name != manifest_item.display_name
-                    or saved.relative_path != manifest_item.relative_path
-                    or saved.size != manifest_item.size_bytes
-                    or saved.sha256 != manifest_item.sha256
-                ):
-                    raise PlatformIntegrityError("stored document does not match its manifest")
+            self._assets.store(principal, planned)
             job_id = self._submit_indexing(
                 principal,
                 record.resource_id,
@@ -301,10 +253,10 @@ class RagPlatform:
         snapshot = self.jobs.get(principal.tenant_id.value, job_id)
         resource_id = self._resource_for_job(principal, snapshot.job_id)
         if resource_id is not None:
-            self._persist_cancel_intent(principal, resource_id)
+            self._indexing.persist_cancel_intent(principal, resource_id)
         snapshot = self.jobs.cancel(principal.tenant_id.value, snapshot.job_id)
         if resource_id is not None:
-            self._mark_failed(
+            self._indexing.mark_failed(
                 principal,
                 resource_id,
                 KnowledgeBaseErrorCode.INDEX_CANCELLED,
@@ -337,11 +289,11 @@ class RagPlatform:
         try:
             self.service.index_manager.get(record.internal_index_id)
         except KeyError:
-            with self._lock_for(resource_id):
+            with self._resource_locks.hold(resource_id):
                 record = self.catalog.get(principal, resource_id)
                 if record.status is not KnowledgeBaseStatus.READY or not record.internal_index_id:
                     raise KnowledgeBaseNotReadyError("knowledge base is not ready") from None
-                paths = self._resolve_documents(principal, record)
+                paths = self._assets.resolve(principal, record)
                 restored = self.service.create_index(
                     [str(path) for path in paths],
                     namespace=self._namespace(principal, resource_id),
@@ -381,7 +333,7 @@ class RagPlatform:
             except JobError:
                 pass
 
-        with self._lock_for(resource_id):
+        with self._resource_locks.hold(resource_id):
             record = self.catalog.get(principal, resource_id)
             if record.status is not KnowledgeBaseStatus.DELETING:
                 record = self.catalog.transition(
@@ -391,12 +343,12 @@ class RagPlatform:
                 )
             if record.internal_index_id:
                 self.service.index_manager.delete(record.internal_index_id)
-            for document in record.documents:
-                document_id = self._document_resource_id(principal, document)
-                self.file_store.delete(principal.tenant_id.value, document_id)
+            self._assets.delete(principal, record)
             self.catalog.delete(principal, resource_id)
-            with self._job_map_lock:
-                self._job_by_resource.pop((principal.tenant_id.value, resource_id), None)
+            self._jobs_by_resource.unbind_resource(
+                principal.tenant_id.value,
+                resource_id,
+            )
             return True
 
     def recover_incomplete(self, principals: Sequence[Principal]) -> int:
@@ -461,10 +413,11 @@ class RagPlatform:
             task,
             idempotency_key=f"recovered-state:{record.resource_id}:{record.version}",
         )
-        with self._job_map_lock:
-            self._job_by_resource[
-                (principal.tenant_id.value, record.resource_id)
-            ] = job_id
+        self._jobs_by_resource.bind(
+            principal.tenant_id.value,
+            record.resource_id,
+            job_id,
+        )
         return job_id
 
     def _recover_idempotency_binding(
@@ -509,264 +462,25 @@ class RagPlatform:
         idempotency_key: str,
     ) -> JobId:
         def task(token: CancellationToken):
-            with self._lock_for(resource_id):
-                return self._index_task(principal, resource_id, token)
+            with self._resource_locks.hold(resource_id):
+                return self._indexing.run(
+                    principal,
+                    resource_id,
+                    token,
+                    namespace=self._namespace(principal, resource_id),
+                )
 
         job_id = self.jobs.submit(
             principal.tenant_id.value,
             task,
             idempotency_key=idempotency_key,
         )
-        with self._job_map_lock:
-            self._job_by_resource[(principal.tenant_id.value, resource_id)] = job_id
-        return job_id
-
-    def _index_task(
-        self,
-        principal: Principal,
-        resource_id: str,
-        token: CancellationToken,
-    ) -> dict[str, str | int]:
-        built_index_id = ""
-        try:
-            token.raise_if_cancelled()
-            record = self.catalog.get(principal, resource_id)
-            paths = self._resolve_documents(principal, record)
-            prepared = self.service.prepare_index(
-                [str(path) for path in paths],
-                namespace=self._namespace(principal, resource_id),
-            )
-            token.raise_if_cancelled()
-            if record.status is KnowledgeBaseStatus.PENDING:
-                record = self.catalog.transition(
-                    principal,
-                    resource_id,
-                    KnowledgeBaseStatus.INDEXING,
-                    internal_index_id=prepared.index_id,
-                )
-            elif record.status is KnowledgeBaseStatus.INDEXING:
-                if record.internal_index_id != prepared.index_id:
-                    raise PlatformIntegrityError("index identity changed during recovery")
-            else:
-                raise KnowledgeBaseNotReadyError("knowledge base cannot be indexed")
-
-            built_index_id = prepared.index_id
-            index_ref = self.service.create_prepared_index(prepared)
-            token.raise_if_cancelled()
-            self.catalog.transition(
-                principal,
-                resource_id,
-                KnowledgeBaseStatus.READY,
-                chunk_count=index_ref.chunk_count,
-            )
-            built_index_id = ""
-            self.metrics.index_tasks_total.increment(
-                labels={"operation": "build", "outcome": "success"}
-            )
-            return {
-                "knowledge_base_id": resource_id,
-                "status": KnowledgeBaseStatus.READY.value,
-                "document_count": index_ref.document_count,
-                "chunk_count": index_ref.chunk_count,
-            }
-        except DocumentValidationError:
-            self._cleanup_uncommitted_index(built_index_id)
-            self._mark_failed(
-                principal,
-                resource_id,
-                KnowledgeBaseErrorCode.CONTENT_REJECTED,
-            )
-            self._record_index_failure()
-            raise
-        except FileStoreError:
-            self._cleanup_uncommitted_index(built_index_id)
-            self._mark_failed(
-                principal,
-                resource_id,
-                KnowledgeBaseErrorCode.INDEX_STORAGE_FAILED,
-            )
-            self._record_index_failure()
-            raise
-        except JobCancelledError:
-            self._cleanup_uncommitted_index(built_index_id)
-            self._mark_failed(
-                principal,
-                resource_id,
-                KnowledgeBaseErrorCode.INDEX_CANCELLED,
-            )
-            self._record_index_failure()
-            raise
-        except Exception:
-            self._cleanup_uncommitted_index(built_index_id)
-            cancellation_requested = token.cancelled or self._cancel_intent_exists(
-                principal,
-                resource_id,
-            )
-            failure_code = (
-                KnowledgeBaseErrorCode.INDEX_CANCELLED
-                if cancellation_requested
-                else KnowledgeBaseErrorCode.INDEX_BUILD_FAILED
-            )
-            self._mark_failed(
-                principal,
-                resource_id,
-                failure_code,
-            )
-            self._record_index_failure()
-            if cancellation_requested:
-                raise JobCancelledError() from None
-            raise
-
-    def _cleanup_uncommitted_index(self, index_id: str) -> None:
-        if not index_id:
-            return
-        try:
-            self.service.index_manager.delete(index_id)
-        except Exception:
-            # The FAILED catalog tombstone retains internal_index_id, so an
-            # operator-initiated resource delete can retry durable cleanup.
-            return
-
-    def _record_index_failure(self) -> None:
-        self.metrics.index_tasks_total.increment(
-            labels={"operation": "build", "outcome": "error"}
+        self._jobs_by_resource.bind(
+            principal.tenant_id.value,
+            resource_id,
+            job_id,
         )
-
-    def _mark_failed(
-        self,
-        principal: Principal,
-        resource_id: str,
-        error_code: KnowledgeBaseErrorCode,
-    ) -> None:
-        try:
-            record = self.catalog.get(principal, resource_id)
-            if record.status in {
-                KnowledgeBaseStatus.PENDING,
-                KnowledgeBaseStatus.INDEXING,
-                KnowledgeBaseStatus.CANCELLING,
-            }:
-                self.catalog.transition(
-                    principal,
-                    resource_id,
-                    KnowledgeBaseStatus.FAILED,
-                    error_code=error_code,
-                )
-        except Exception:
-            return
-
-    def _persist_cancel_intent(
-        self,
-        principal: Principal,
-        resource_id: str,
-    ) -> None:
-        try:
-            record = self.catalog.get(principal, resource_id)
-            if record.status in {
-                KnowledgeBaseStatus.PENDING,
-                KnowledgeBaseStatus.INDEXING,
-            }:
-                self.catalog.transition(
-                    principal,
-                    resource_id,
-                    KnowledgeBaseStatus.CANCELLING,
-                )
-        except Exception:
-            try:
-                current = self.catalog.get(principal, resource_id)
-            except Exception:
-                current = None
-            if current is not None and current.status in {
-                KnowledgeBaseStatus.CANCELLING,
-                KnowledgeBaseStatus.READY,
-                KnowledgeBaseStatus.FAILED,
-                KnowledgeBaseStatus.DELETING,
-            }:
-                return
-            raise PlatformUnavailableError(
-                "knowledge base cancellation could not be persisted"
-            ) from None
-
-    def _cancel_intent_exists(self, principal: Principal, resource_id: str) -> bool:
-        try:
-            return (
-                self.catalog.get(principal, resource_id).status
-                is KnowledgeBaseStatus.CANCELLING
-            )
-        except Exception:
-            return False
-
-    def _converge_cancel_intent(
-        self,
-        principal: Principal,
-        record: KnowledgeBaseRecord,
-    ) -> KnowledgeBaseRecord:
-        """Finish a durable cancellation whose in-memory job no longer exists."""
-
-        if record.status is not KnowledgeBaseStatus.CANCELLING:
-            return record
-        try:
-            return self.catalog.transition(
-                principal,
-                record.resource_id,
-                KnowledgeBaseStatus.FAILED,
-                error_code=KnowledgeBaseErrorCode.INDEX_CANCELLED,
-            )
-        except Exception:
-            try:
-                current = self.catalog.get(principal, record.resource_id)
-            except Exception:
-                current = None
-            if current is not None and current.status is KnowledgeBaseStatus.FAILED:
-                return current
-            raise PlatformUnavailableError(
-                "knowledge base cancellation recovery did not complete"
-            ) from None
-
-    def _resolve_documents(
-        self,
-        principal: Principal,
-        record: KnowledgeBaseRecord,
-    ) -> tuple[Path, ...]:
-        resolved: list[Path] = []
-        for document in record.documents:
-            document_id = self._document_resource_id(principal, document)
-            path = self.file_store.resolve(principal.tenant_id.value, document_id)
-            relative = path.resolve(strict=True).relative_to(self.file_store.root).as_posix()
-            if relative != document.relative_path or path.name != document.display_name:
-                raise PlatformIntegrityError("document path does not match its manifest")
-            size, digest = self._file_identity(path)
-            if size != document.size_bytes or digest != document.sha256:
-                raise PlatformIntegrityError("document content does not match its manifest")
-            resolved.append(path)
-        if not resolved:
-            raise PlatformIntegrityError("knowledge base has no documents")
-        return tuple(resolved)
-
-    def _document_resource_id(
-        self,
-        principal: Principal,
-        document: DocumentManifest,
-    ) -> str:
-        parts = PurePosixPath(document.relative_path).parts
-        expected_tenant = "tenant-" + hashlib.sha256(
-            principal.tenant_id.value.encode("utf-8")
-        ).hexdigest()
-        if len(parts) != 3 or parts[0] != expected_tenant:
-            raise PlatformIntegrityError("document manifest is outside the tenant boundary")
-        return parts[1]
-
-    @staticmethod
-    def _file_identity(path: Path) -> tuple[int, str]:
-        digest = hashlib.sha256()
-        size = 0
-        try:
-            with path.open("rb") as source:
-                while block := source.read(64 * 1024):
-                    size += len(block)
-                    digest.update(block)
-        except OSError:
-            raise PlatformIntegrityError("document could not be verified") from None
-        return size, digest.hexdigest()
+        return job_id
 
     def _rollback_create(
         self,
@@ -786,7 +500,7 @@ class RagPlatform:
 
         cleanup_succeeded = True
         for document in current.documents:
-            document_id = self._document_resource_id(principal, document)
+            document_id = self._assets.document_resource_id(principal, document)
             try:
                 self.file_store.delete(principal.tenant_id.value, document_id)
             except FileStoreError:
@@ -796,90 +510,6 @@ class RagPlatform:
                 self.catalog.delete(principal, record.resource_id)
             except Exception:
                 return
-
-    def _new_document_id(self) -> str:
-        value = self._document_id_factory()
-        if not isinstance(value, str):
-            raise PlatformUnavailableError("document identifier generation failed")
-        normalized = value.replace("-", "")
-        if len(normalized) < 16 or not normalized.isalnum():
-            raise PlatformUnavailableError("document identifier generation failed")
-        return f"doc_{normalized[:48]}"
-
-    def _materialize_uploads(
-        self,
-        documents: Sequence[UploadDocument],
-    ) -> tuple[UploadDocument, ...]:
-        uploads = tuple(documents)
-        if not uploads:
-            return ()
-        materialized: list[UploadDocument] = []
-        total = 0
-        for upload in uploads:
-            if not isinstance(upload, UploadDocument):
-                raise PlatformValidationError("documents must be UploadDocument values")
-            content = self._read_upload(upload.source)
-            total += len(content)
-            if total > self.settings.max_total_bytes:
-                raise PlatformValidationError("total upload size exceeds the configured limit")
-            materialized.append(UploadDocument(upload.display_name, content))
-        return tuple(materialized)
-
-    def _read_upload(
-        self,
-        source: bytes | bytearray | memoryview | BinaryIO,
-    ) -> bytes:
-        if isinstance(source, (bytes, bytearray, memoryview)):
-            content = bytes(source)
-            if len(content) > self.settings.max_file_bytes:
-                raise PlatformValidationError("file size exceeds the configured limit")
-            return content
-        reader = getattr(source, "read", None)
-        if not callable(reader):
-            raise PlatformValidationError("upload source must be binary")
-        chunks: list[bytes] = []
-        size = 0
-        try:
-            while True:
-                block = reader(min(64 * 1024, self.settings.max_file_bytes - size + 1))
-                if block in (b"", None):
-                    break
-                if not isinstance(block, (bytes, bytearray, memoryview)):
-                    raise PlatformValidationError("upload source must return bytes")
-                normalized = bytes(block)
-                size += len(normalized)
-                if size > self.settings.max_file_bytes:
-                    raise PlatformValidationError("file size exceeds the configured limit")
-                chunks.append(normalized)
-        except PlatformValidationError:
-            raise
-        except Exception:
-            raise PlatformValidationError("upload could not be read") from None
-        return b"".join(chunks)
-
-    @staticmethod
-    def _create_request_digest(
-        display_name: str,
-        uploads: Sequence[UploadDocument],
-    ) -> str:
-        if not isinstance(display_name, str):
-            raise PlatformValidationError("display_name must be a string")
-        try:
-            collection_name = display_name.encode("utf-8")
-            identities = sorted(
-                (
-                    upload.display_name.encode("utf-8"),
-                    hashlib.sha256(bytes(upload.source)).digest(),
-                )
-                for upload in uploads
-            )
-        except (AttributeError, TypeError, UnicodeError):
-            raise PlatformValidationError("upload metadata is invalid") from None
-        digest = hashlib.sha256(b"rag-create-request-v1")
-        for value in (collection_name, *(part for identity in identities for part in identity)):
-            digest.update(len(value).to_bytes(8, "big"))
-            digest.update(value)
-        return digest.hexdigest()
 
     @staticmethod
     def _namespace(principal: Principal, resource_id: str) -> str:
@@ -894,22 +524,19 @@ class RagPlatform:
         identity = f"{principal.tenant_id.value}\0{resource_id}\0{session_id.strip()}"
         return "session_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
-    def _lock_for(self, resource_id: str) -> threading.RLock:
-        slot = sum(resource_id.encode("utf-8")) % len(self._resource_locks)
-        return self._resource_locks[slot]
-
     def _job_for_resource(self, principal: Principal, resource_id: str) -> JobId | None:
-        identity = (principal.tenant_id.value, resource_id)
-        with self._job_map_lock:
-            job_id = self._job_by_resource.get(identity)
+        tenant_id = principal.tenant_id.value
+        job_id = self._jobs_by_resource.job_for(tenant_id, resource_id)
         if job_id is None:
             return None
         try:
-            self.jobs.get(principal.tenant_id.value, job_id)
+            self.jobs.get(tenant_id, job_id)
         except JobNotFoundError:
-            with self._job_map_lock:
-                if self._job_by_resource.get(identity) == job_id:
-                    self._job_by_resource.pop(identity, None)
+            self._jobs_by_resource.unbind_resource(
+                tenant_id,
+                resource_id,
+                expected_job_id=job_id,
+            )
             return None
         return job_id
 
@@ -922,8 +549,17 @@ class RagPlatform:
             return True
 
     def _resource_for_job(self, principal: Principal, job_id: JobId) -> str | None:
-        with self._job_map_lock:
-            for (tenant_id, resource_id), mapped_job in self._job_by_resource.items():
-                if tenant_id == principal.tenant_id.value and mapped_job == job_id:
-                    return resource_id
-        return None
+        return self._jobs_by_resource.resource_for(principal.tenant_id.value, job_id)
+
+
+__all__ = [
+    "IdempotencyInProgressError",
+    "KnowledgeBaseNotReadyError",
+    "KnowledgeBaseSubmission",
+    "PlatformError",
+    "PlatformIntegrityError",
+    "PlatformUnavailableError",
+    "PlatformValidationError",
+    "RagPlatform",
+    "UploadDocument",
+]

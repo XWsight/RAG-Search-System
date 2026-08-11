@@ -60,7 +60,8 @@ git diff --check
 - 修复缺陷时先加入能重现问题的回归测试。
 - 新模块包含正常路径、边界值、无效类型/大小、并发或幂等路径，以及安全失败行为。
 - 文件系统测试使用临时目录；不得删除开发者仓库、home 或广泛匹配路径。
-- API 测试使用注入的 platform/authenticator/provider，不调用真实模型或搜索服务。
+- API 测试使用注入的应用端口、authenticator 和 provider，不依赖具体 `RagPlatform`，也不调用真实模型或搜索服务。
+- `api.py` 只能依赖 `application.py` 暴露的用例端口，不得直接导入 platform、catalog、file store、job manager 或模型供应商；`test_architecture.py` 会检查该方向以及生产模块导入环。
 - 时间相关组件注入 fake clock，任务并发测试必须有有界等待，避免 sleep 驱动的脆弱断言。
 - SQLite/持久索引变更覆盖重启、部分写入、重复请求、外租户访问和删除恢复。
 

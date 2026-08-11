@@ -7,12 +7,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FRAMEWORK_NEUTRAL_MODULES = (
+    "rag_system/application.py",
     "rag_system/domain.py",
     "rag_system/ports.py",
     "rag_system/grounding.py",
     "rag_system/answer_protocol.py",
     "rag_system/provider_errors.py",
     "rag_system/json_contract.py",
+    "rag_system/submission.py",
+    "rag_system/coordination.py",
+    "rag_system/assets.py",
+    "rag_system/indexing.py",
 )
 FORBIDDEN_FRAMEWORK_PREFIXES = (
     "chromadb",
@@ -41,6 +46,60 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             if imported == "rag_system.providers"
         ]
         self.assertEqual(violations, [])
+
+    def test_http_boundary_depends_on_application_contract_not_platform_implementation(self) -> None:
+        forbidden = {
+            "rag_system.catalog",
+            "rag_system.file_store",
+            "rag_system.idempotency",
+            "rag_system.jobs",
+            "rag_system.loaders",
+            "rag_system.platform",
+            "rag_system.providers",
+            "rag_system.retrieval",
+            "rag_system.service",
+        }
+        imports = set(_imports(ROOT / "rag_system/api.py"))
+        self.assertEqual(sorted(imports & forbidden), [])
+        self.assertIn("rag_system.application", imports)
+
+    def test_production_modules_have_no_import_cycles(self) -> None:
+        modules = {
+            path.stem: path
+            for path in (ROOT / "rag_system").glob("*.py")
+            if path.name != "__init__.py"
+        }
+        graph = {
+            name: {
+                imported.removeprefix("rag_system.").split(".", maxsplit=1)[0]
+                for imported in _imports(path)
+                if imported.startswith("rag_system.")
+                and imported.removeprefix("rag_system.").split(".", maxsplit=1)[0]
+                in modules
+            }
+            for name, path in modules.items()
+        }
+
+        cycles: list[str] = []
+        visiting: list[str] = []
+        visited: set[str] = set()
+
+        def visit(module: str) -> None:
+            if module in visiting:
+                start = visiting.index(module)
+                cycles.append(" -> ".join((*visiting[start:], module)))
+                return
+            if module in visited:
+                return
+            visiting.append(module)
+            for dependency in sorted(graph[module]):
+                visit(dependency)
+            visiting.pop()
+            visited.add(module)
+
+        for module in sorted(graph):
+            visit(module)
+        self.assertEqual(cycles, [])
 
 
 def _imports(path: Path) -> tuple[str, ...]:

@@ -8,6 +8,7 @@ import unittest
 from fastapi.testclient import TestClient
 
 from rag_system.api import create_app
+from rag_system.application import IdempotencyInProgressError, KnowledgeBaseSubmission
 from rag_system.catalog import DocumentManifest, KnowledgeBaseRecord, KnowledgeBaseStatus
 from rag_system.config import Settings
 from rag_system.domain import AnswerClaim, AnswerResult, Citation, Route, RouteDecision
@@ -15,7 +16,6 @@ from rag_system.idempotency import IdempotencyConflictError
 from rag_system.jobs import JobId, JobSnapshot, JobStatus
 from rag_system.metrics import create_operational_metrics
 from rag_system.observability import JsonEventLogger
-from rag_system.platform import IdempotencyInProgressError, KnowledgeBaseSubmission
 from rag_system.rate_limit import TokenBucketRateLimiter
 from rag_system.tenancy import ApiKeyAuthenticator, Principal, TenantId
 

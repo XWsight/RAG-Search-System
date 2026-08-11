@@ -33,9 +33,12 @@ HTTP 入口不提供 TLS；公网部署必须使用受控反向代理。上传�
 
 | 边界 | 当前职责 | 不负责 |
 | --- | --- | --- |
-| [`api.py`](../rag_system/api.py) | API Key/Bearer 认证接入、角色检查、请求模型、上传读取、租户限流、错误封装、安全响应头、健康检查和 `/metrics` | 文档解析、索引算法、业务状态迁移 |
+| [`application.py`](../rag_system/application.py) | 向 HTTP、CLI、后台入口和未来 Agent 暴露框架无关的用例端口、提交 DTO 与稳定应用错误 | FastAPI、SQLite、Chroma 或供应商实现 |
+| [`api.py`](../rag_system/api.py)、[`api_contract.py`](../rag_system/api_contract.py)、[`api_errors.py`](../rag_system/api_errors.py) | API Key/Bearer 接入、角色检查、版本化 wire schema、上传读取、租户限流、集中错误分类、安全响应头、健康检查和 `/metrics` | 文档解析、索引算法、业务状态迁移或具体平台实现 |
 | [`tenancy.py`](../rag_system/tenancy.py) | `Principal`、`TenantId`、仅保存摘要的 API Key 校验和非枚举式拒绝 | 密钥签发、在线撤销、组织级 IAM |
-| [`platform.py`](../rag_system/platform.py) | 知识库生命周期、幂等创建、文件/目录/任务协调、重启恢复、租户化索引与会话标识 | HTTP 协议和具体向量实现 |
+| [`platform.py`](../rag_system/platform.py) | 应用门面：知识库生命周期、幂等创建、任务提交、重启恢复、租户化索引与会话标识的用例编排 | HTTP 协议、文档内容校验细节和索引状态机细节 |
+| [`submission.py`](../rag_system/submission.py)、[`coordination.py`](../rag_system/coordination.py) | 上传的有界物化与稳定摘要、文档 ID 策略、确定性分片锁和一致的双向 resource-job 登记 | 文件持久化、任务执行和 HTTP multipart 解析 |
+| [`assets.py`](../rag_system/assets.py)、[`indexing.py`](../rag_system/indexing.py) | Catalog 清单与文件结果核对、路径/哈希完整性、耐久索引状态迁移、取消收敛和失败补偿 | API 鉴权、问答路由或供应商调用 |
 | [`catalog.py`](../rag_system/catalog.py) | SQLite schema v3 中租户范围的知识库状态机、耐久取消意图与文档清单 | 文档正文、向量或耐久任务执行日志 |
 | [`idempotency.py`](../rag_system/idempotency.py) | SQLite 中按租户、操作和 key 隔离的创建请求预留与结果绑定 | 任务结果持久化 |
 | [`file_store.py`](../rag_system/file_store.py) | 有界、不可穿越、拒绝链接/重解析点的租户文件保存、解析和精确删除 | 文档格式解析 |
@@ -50,7 +53,7 @@ HTTP 入口不提供 TLS；公网部署必须使用受控反向代理。上传�
 | [`observability.py`](../rag_system/observability.py)、[`metrics.py`](../rag_system/metrics.py) | 字段白名单 JSON 事件、低基数指标和关联 ID | 文档/问题正文日志或分布式追踪后端 |
 | [`bootstrap.py`](../rag_system/bootstrap.py) | 本地 UI 与生产 API 的依赖组装、严格凭据解析、启动恢复 | 运行时迁移编排 |
 
-领域对象和协议集中在 [`domain.py`](../rag_system/domain.py) 与 [`ports.py`](../rag_system/ports.py)。这使测试可以注入内存实现或 fake provider，而不进行真实云调用。
+领域对象和协议集中在 [`domain.py`](../rag_system/domain.py)、[`ports.py`](../rag_system/ports.py) 与 [`application.py`](../rag_system/application.py)。HTTP 只依赖应用端口；具体平台可以在组合根替换。架构测试同时禁止生产模块导入环、HTTP 反向依赖平台/存储实现，以及领域协议引入 Web、数据库或模型框架。
 
 ## 异步建库数据流
 

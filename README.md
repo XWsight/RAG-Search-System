@@ -185,10 +185,17 @@ python scripts\benchmark_answers.py evals\answer_cases.jsonl `
 
 ```text
 rag_system/
-  api.py              # REST 边界、鉴权、角色、限流和安全错误协议
+  application.py      # 与 HTTP/CLI/Agent 无关的应用用例端口和稳定错误
+  api.py              # REST 路由、鉴权、角色、限流和安全响应策略
+  api_contract.py     # 版本化 HTTP schema 与领域到 wire 的投影
+  api_errors.py       # 应用失败到公共 HTTP 错误的集中映射
   web_ui.py           # 同源产品界面的安全挂载与响应头
   web_ui/             # 知识库管理、任务进度、问答和引用展示前端
-  platform.py         # 多租户资源、后台任务与数据生命周期编排
+  platform.py         # 应用门面：多租户用例、幂等与恢复编排
+  submission.py       # 上传物化、大小策略、请求摘要和文档 ID
+  coordination.py     # 有界分片锁与双向 resource-job 登记
+  assets.py           # 文档清单、存储结果、路径和内容一致性边界
+  indexing.py         # 耐久索引状态机、取消语义和失败补偿
   catalog.py          # SQLite 知识库目录与状态机
   idempotency.py      # 持久化幂等 reservation
   file_store.py       # 租户隔离、原子且有界的上传存储
