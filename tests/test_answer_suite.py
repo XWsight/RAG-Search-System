@@ -3,9 +3,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
+from rag_system.answer_analysis import build_answer_suite_report
+from rag_system.answer_benchmark import load_answer_benchmark, run_answer_benchmark
 from rag_system.answer_suite import load_answer_suite, validate_answer_suite_contract
+from rag_system.domain import AnswerClaim, GeneratedAnswer
 from rag_system.evaluation_suite import EvaluationSuiteError
 
 
@@ -194,6 +198,83 @@ class AnswerBenchmarkSuiteTests(unittest.TestCase):
             self.assertEqual(json.loads(json_output.read_text(encoding="utf-8"))["case_count"], 50)
             self.assertIn("Coverage matrix", markdown_output.read_text(encoding="utf-8"))
 
+    def test_full_run_reports_every_governed_quality_slice(self) -> None:
+        suite = load_answer_suite(PROJECT_ROOT / "evals" / "answer_suite.json")
+        benchmark = run_answer_benchmark(suite.benchmark_cases, self._perfect_generator(suite))
+
+        report = build_answer_suite_report(suite, benchmark)
+
+        self.assertEqual(report.evaluated_split, "all")
+        self.assertEqual(len(report.slices), 34)
+        self.assertTrue(all(item.passed_case_count == item.case_count for item in report.slices))
+        self.assertEqual(
+            [item.value for item in report.slices if item.dimension == "split"],
+            ["development", "test", "validation"],
+        )
+        self.assertEqual(len([item for item in report.slices if item.dimension == "category"]), 13)
+        self.assertEqual(len([item for item in report.slices if item.dimension == "risk_tag"]), 15)
+        self.assertEqual(json.loads(report.to_json())["benchmark"]["case_count"], 50)
+        self.assertIn("## 质量切片", report.to_markdown())
+        self.assertIn("N/A", report.to_markdown())
+        self.assertIn("无。", report.to_markdown())
+
+    def test_slice_exposes_localized_failure_instead_of_only_average(self) -> None:
+        suite = load_answer_suite(PROJECT_ROOT / "evals" / "answer_suite.json")
+        perfect = self._perfect_generator(suite)
+
+        def generate(question, evidence):
+            if question == "上传文档在解析前要限制什么？":
+                raise RuntimeError("provider detail must not enter the report")
+            return perfect(question, evidence)
+
+        benchmark = run_answer_benchmark(suite.benchmark_cases, generate)
+        report = build_answer_suite_report(suite, benchmark)
+        ingestion = next(
+            item
+            for item in report.slices
+            if item.dimension == "category" and item.value == "ingestion"
+        )
+
+        self.assertEqual(ingestion.case_count, 4)
+        self.assertEqual(ingestion.passed_case_count, 3)
+        self.assertEqual(ingestion.failure_case_ids, ("loader_limits",))
+        self.assertEqual(ingestion.metrics.contract_success_rate, 0.75)
+        self.assertNotIn("provider detail", report.to_json())
+
+    def test_split_run_only_reports_selected_suite_cases(self) -> None:
+        suite = load_answer_suite(PROJECT_ROOT / "evals" / "answer_suite.json")
+        cases = suite.cases_for_split("validation")
+        benchmark = run_answer_benchmark(cases, self._perfect_generator(suite))
+
+        report = build_answer_suite_report(suite, benchmark, split="validation")
+
+        self.assertEqual(report.evaluated_split, "validation")
+        self.assertEqual(report.benchmark.case_count, 15)
+        self.assertEqual(
+            [(item.dimension, item.value) for item in report.slices if item.dimension == "split"],
+            [("split", "validation")],
+        )
+
+    def test_slice_report_rejects_results_from_another_dataset(self) -> None:
+        suite = load_answer_suite(PROJECT_ROOT / "evals" / "answer_suite.json")
+        legacy = load_answer_benchmark(PROJECT_ROOT / "evals" / "answer_cases.jsonl")
+        benchmark = run_answer_benchmark(legacy, self._perfect_generator_for_cases(legacy))
+
+        with self.assertRaisesRegex(EvaluationSuiteError, "digest does not match"):
+            build_answer_suite_report(suite, benchmark)
+
+    def test_slice_report_rejects_reordered_or_inconsistent_results(self) -> None:
+        suite = load_answer_suite(PROJECT_ROOT / "evals" / "answer_suite.json")
+        benchmark = run_answer_benchmark(suite.benchmark_cases, self._perfect_generator(suite))
+
+        with self.assertRaisesRegex(EvaluationSuiteError, "result order"):
+            build_answer_suite_report(
+                suite,
+                replace(benchmark, results=tuple(reversed(benchmark.results))),
+            )
+        with self.assertRaisesRegex(EvaluationSuiteError, "counts do not match"):
+            build_answer_suite_report(suite, replace(benchmark, case_count=49))
+
     class _SuiteContext:
         def __init__(self, payload: dict) -> None:
             self.payload = payload
@@ -212,6 +293,29 @@ class AnswerBenchmarkSuiteTests(unittest.TestCase):
 
     def _suite(self, payload: dict) -> _SuiteContext:
         return self._SuiteContext(payload)
+
+    def _perfect_generator(self, suite):
+        return self._perfect_generator_for_cases(suite.benchmark_cases)
+
+    def _perfect_generator_for_cases(self, cases):
+        by_question = {case.question: case for case in cases}
+
+        def generate(question, evidence):
+            del evidence
+            case = by_question[question]
+            if case.should_refuse:
+                return GeneratedAnswer((), insufficient=True)
+            return GeneratedAnswer(
+                tuple(
+                    AnswerClaim(
+                        " ".join(group[0] for group in fact.term_groups),
+                        (fact.supporting_citation_ids[0],),
+                    )
+                    for fact in case.facts
+                )
+            )
+
+        return generate
 
 
 if __name__ == "__main__":

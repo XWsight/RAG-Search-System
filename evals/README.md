@@ -51,6 +51,6 @@ python scripts\validate_answer_suite.py evals\answer_suite.json `
 
 ## Reporting rules
 
-每份检索结果必须同时报告：commit、suite ID、ground-truth digest、问题数、family 数、来源数、split、模型与切分配置、top-k、全部指标和逐题失败。回答结果必须报告 commit、suite digest、case/fact 数、split、provider/model 配置、五项结构化指标和失败 case；不得把 50 个 case 描述为真实业务准确率。
+每份检索结果必须同时报告：commit、suite ID、ground-truth digest、问题数、family 数、来源数、split、模型与切分配置、top-k、全部指标和逐题失败。回答结果必须报告 commit、suite digest、case/fact 数、split、provider/model 配置、总体五项指标，以及按 category、difficulty、risk tag 切分的全部结果和失败 case；不得把 50 个 case 描述为真实业务准确率，也不得隐藏较差切片。
 
 `retrieval-suite.json` 冻结 manifest、全部 corpus 内容摘要和覆盖矩阵；BM25 full-suite gate 冻结确定性指标下限；Hybrid gate 是需要本地模型的手动下限。更新任何契约都必须附带失败样例、人工复核和明确理由，不能只修改 gate 让 CI 变绿。

@@ -190,7 +190,7 @@ python scripts\validate_answer_suite.py evals\answer_suite.json `
   --contract evals\gates\answer-suite.json
 ```
 
-受治理的回答套件包含 50 个独立问题、70 个原子事实、35 个可回答样例和 15 个拒答样例，覆盖 13 个类别与 15 个风险标签；development/validation/test 为 20/15/15。套件摘要 `89e99234c8b10102` 会冻结完整证据、事实标注和覆盖矩阵，默认 CI 只做确定性校验，不调用云端模型。
+受治理的回答套件包含 50 个独立问题、70 个原子事实、35 个可回答样例和 15 个拒答样例，覆盖 13 个类别与 15 个风险标签；development/validation/test 为 20/15/15。套件摘要 `89e99234c8b10102` 会冻结完整证据、事实标注和覆盖矩阵，默认 CI 只做确定性校验，不调用云端模型。真实运行报告除总体指标外，还会自动生成 split、类别、难度和风险标签四个维度的质量切片、严格通过数与失败 case ID，避免平均分掩盖局部退化。
 
 ```powershell
 python scripts\benchmark_answers.py evals\answer_cases.jsonl `
@@ -238,6 +238,7 @@ rag_system/
   benchmark_suite.py  # 评测家族、覆盖矩阵、来源隔离和泄漏校验
   evaluation_suite.py # 检索/回答套件共享的严格 schema、摘要与冻结契约
   answer_suite.py     # 结构化回答证据、事实、split 和风险覆盖治理
+  answer_analysis.py  # 回答质量切片、失败定位和可审计报告
   quality_gate.py     # 绑定数据集的严格回归门禁
   answer_benchmark.py # 结构化回答事实、拒答、原子性与归因评测
   answer_quality_gate.py # 绑定回答数据集的手动发布门禁

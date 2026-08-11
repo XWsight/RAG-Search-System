@@ -196,6 +196,8 @@ python scripts/validate_answer_suite.py evals/answer_suite.json `
 
 该命令只验证数据，不调用模型，所以进入默认 CI。真实生成运行必须显式提供 `--dotenv`；可用 `--split development|validation|test` 保持开发、选型与最终复核分离。完整 50 题云端运行有费用且受供应商版本和随机性影响，不能作为每次提交的确定性门禁。
 
+使用 governed suite 运行时，JSON/Markdown 报告会同时给出总体指标和四类切片：split、category、difficulty、risk tag。每个切片包含 case/fact/claim 数、严格通过数、五项指标和失败 case ID；没有标注事实的纯拒答切片把事实召回、原子性和归因显示为 `N/A`，不能把“无适用分母”包装成满分。切片用于定位退化，不得只挑表现最好的切片对外报告。
+
 生产生成路径使用结构化 `claims + citation_ids + insufficient` 契约。独立的 [`answer_cases.jsonl`](../evals/answer_cases.jsonl) 只包含问题、证据和人工标注的原子事实，不包含模型预测。运行时直接把这些证据交给当前 Chat provider，再分别计算：
 
 - **结构契约成功率**：供应商输出通过严格 JSON、状态和当前证据注册表校验的样例比例；

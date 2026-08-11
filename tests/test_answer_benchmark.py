@@ -8,6 +8,7 @@ from rag_system.answer_benchmark import (
     AnswerDatasetError,
     load_answer_benchmark,
     run_answer_benchmark,
+    summarize_answer_results,
 )
 from rag_system.answer_quality_gate import (
     answer_quality_gate_from_mapping,
@@ -22,6 +23,10 @@ GATE = Path(__file__).resolve().parents[1] / "evals" / "gates" / "answer-live.js
 
 
 class AnswerBenchmarkTests(unittest.TestCase):
+    def test_metric_aggregation_rejects_an_empty_slice(self) -> None:
+        with self.assertRaisesRegex(ValueError, "results cannot be empty"):
+            summarize_answer_results(())
+
     def test_repository_ground_truth_is_strict_and_prediction_free(self) -> None:
         cases = load_answer_benchmark(DATASET)
         self.assertEqual(len(cases), 4)

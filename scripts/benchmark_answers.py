@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rag_system.answer_benchmark import load_answer_benchmark, run_answer_benchmark  # noqa: E402
+from rag_system.answer_analysis import build_answer_suite_report  # noqa: E402
 from rag_system.answer_quality_gate import (  # noqa: E402
     evaluate_answer_quality_gate,
     load_answer_quality_gate,
@@ -46,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    suite = None
     if args.dataset.suffix.lower() == ".json":
         suite = load_answer_suite(args.dataset)
         cases = (
@@ -69,8 +71,13 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         model.close()
 
-    json_report = report.to_json()
-    markdown_report = report.to_markdown()
+    rendered_report = (
+        build_answer_suite_report(suite, report, split=args.split)
+        if suite is not None
+        else report
+    )
+    json_report = rendered_report.to_json()
+    markdown_report = rendered_report.to_markdown()
     if args.json_output:
         args.json_output.parent.mkdir(parents=True, exist_ok=True)
         args.json_output.write_text(json_report, encoding="utf-8")

@@ -274,10 +274,6 @@ def run_answer_benchmark(
     if not cases:
         raise ValueError("cases cannot be empty")
     results: list[AnswerCaseResult] = []
-    total_facts = sum(len(case.facts) for case in cases)
-    total_claims = 0
-    total_atomic = 0
-    total_grounded = 0
 
     for case in cases:
         try:
@@ -320,9 +316,6 @@ def run_answer_benchmark(
                     recovered.append(fact.fact_id)
 
         claim_count = len(draft.claims)
-        total_claims += claim_count
-        total_atomic += atomic_count
-        total_grounded += grounded_count
         results.append(
             AnswerCaseResult(
                 case_id=case.case_id,
@@ -337,27 +330,40 @@ def run_answer_benchmark(
             )
         )
 
-    metrics = AnswerBenchmarkMetrics(
-        contract_success_rate=_ratio(sum(item.contract_valid for item in results), len(cases)),
-        refusal_accuracy=_ratio(sum(item.refusal_correct for item in results), len(cases)),
+    resolved_results = tuple(results)
+    metrics = summarize_answer_results(resolved_results)
+    return AnswerBenchmarkReport(
+        dataset_digest=answer_dataset_digest(cases),
+        case_count=len(cases),
+        fact_count=sum(item.expected_fact_count for item in resolved_results),
+        metrics=metrics,
+        results=resolved_results,
+    )
+
+
+def summarize_answer_results(
+    results: Sequence[AnswerCaseResult],
+) -> AnswerBenchmarkMetrics:
+    """Aggregate one authoritative set of metrics for any non-empty result slice."""
+
+    if not results:
+        raise ValueError("results cannot be empty")
+    total_facts = sum(item.expected_fact_count for item in results)
+    total_claims = sum(item.claim_count for item in results)
+    return AnswerBenchmarkMetrics(
+        contract_success_rate=_ratio(sum(item.contract_valid for item in results), len(results)),
+        refusal_accuracy=_ratio(sum(item.refusal_correct for item in results), len(results)),
         fact_recall=_ratio(sum(len(item.recovered_fact_ids) for item in results), total_facts),
         atomic_claim_rate=_ratio(
-            total_atomic,
+            sum(item.atomic_claim_count for item in results),
             total_claims,
             empty_value=0.0 if total_facts else 1.0,
         ),
         attribution_precision=_ratio(
-            total_grounded,
+            sum(item.grounded_claim_count for item in results),
             total_claims,
             empty_value=0.0 if total_facts else 1.0,
         ),
-    )
-    return AnswerBenchmarkReport(
-        dataset_digest=_dataset_digest(cases),
-        case_count=len(cases),
-        fact_count=total_facts,
-        metrics=metrics,
-        results=tuple(results),
     )
 
 
@@ -415,7 +421,9 @@ def _bounded_string(value: object, field: str, location: str, limit: int) -> str
     return value.strip()
 
 
-def _dataset_digest(cases: Sequence[AnswerBenchmarkCase]) -> str:
+def answer_dataset_digest(cases: Sequence[AnswerBenchmarkCase]) -> str:
+    """Return the stable digest used to bind reports and quality gates."""
+
     canonical = json.dumps(
         [case.to_dict() for case in cases],
         ensure_ascii=False,
