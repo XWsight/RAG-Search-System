@@ -1,0 +1,81 @@
+"""Run a dependency-free BM25 baseline against the annotated retrieval set."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from rag_system.benchmark import load_retrieval_benchmark, run_retrieval_benchmark  # noqa: E402
+from rag_system.config import load_settings  # noqa: E402
+from rag_system.domain import SearchHit  # noqa: E402
+from rag_system.ingestion import DocumentIngestor  # noqa: E402
+from rag_system.retrieval import RoutingPolicy  # noqa: E402
+from rag_system.sparse import BM25Index, SparseDocument  # noqa: E402
+
+
+class SparseBaselineRetriever:
+    """Adapt BM25 chunks to the common retriever contract for baselining."""
+
+    def __init__(self, chunks) -> None:
+        self._chunks = {chunk.chunk_id: chunk for chunk in chunks}
+        self._index = BM25Index(
+            SparseDocument(chunk.chunk_id, chunk.text) for chunk in chunks
+        )
+
+    def search(self, query: str, *, top_k: int):
+        sparse_hits = self._index.search(query, top_k=top_k)
+        return tuple(
+            SearchHit(
+                chunk=self._chunks[hit.document_id],
+                score=hit.score / (hit.score + 1.0),
+                sparse_rank=rank,
+                reasons=("sparse",),
+            )
+            for rank, hit in enumerate(sparse_hits, start=1)
+        )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run the dependency-free BM25 baseline; no cloud calls are made."
+    )
+    parser.add_argument("dataset", type=Path)
+    parser.add_argument("documents", nargs="+", type=Path)
+    parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--json-output", type=Path)
+    parser.add_argument("--markdown-output", type=Path)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = build_parser().parse_args(argv)
+    settings = load_settings()
+    ingestion = DocumentIngestor(settings).ingest(arguments.documents, namespace="bm25-baseline")
+    run = run_retrieval_benchmark(
+        load_retrieval_benchmark(arguments.dataset),
+        SparseBaselineRetriever(ingestion.chunks),
+        RoutingPolicy(settings),
+        top_k=arguments.top_k,
+    )
+    if arguments.json_output:
+        _write(arguments.json_output, run.to_json())
+    if arguments.markdown_output:
+        _write(arguments.markdown_output, run.to_markdown())
+    if not arguments.json_output and not arguments.markdown_output:
+        print(run.to_markdown(), end="")
+    return 0
+
+
+def _write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

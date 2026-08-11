@@ -1,0 +1,12 @@
+{"case_id":"rag_definition","question":"什么是 RAG？","relevance":{"rag.md":3},"expected_route":"local","allow_web":false}
+{"case_id":"rag_limits","question":"RAG 为什么仍然可能回答错误？","relevance":{"rag.md":3},"expected_route":"local","allow_web":false}
+{"case_id":"bm25_strength","question":"检索产品编号和函数名时哪种方法更敏感？","relevance":{"retrieval.md":3},"expected_route":"local","allow_web":false}
+{"case_id":"rrf_reason","question":"为什么混合检索不能直接相加 BM25 和向量分数？","relevance":{"retrieval.md":3},"expected_route":"local","allow_web":false}
+{"case_id":"metrics","question":"怎样用 Recall、MRR 和 nDCG 校准检索？","relevance":{"retrieval.md":3,"rag.md":1},"expected_route":"local","allow_web":false}
+{"case_id":"embedding","question":"Embedding 和 ChromaDB 分别有什么作用？","relevance":{"storage.md":3},"expected_route":"local","allow_web":false}
+{"case_id":"index_reuse","question":"为什么不能每次提问都重新创建向量集合？","relevance":{"storage.md":3},"expected_route":"local","allow_web":false}
+{"case_id":"upload_boundary","question":"DOCX 压缩包需要防范哪些安全风险？","relevance":{"safety.md":3},"expected_route":"local","allow_web":false}
+{"case_id":"privacy_switch","question":"什么时候可以把文档证据发送给云端？","relevance":{"safety.md":3},"expected_route":"local","allow_web":false}
+{"case_id":"safe_errors","question":"错误信息和日志中为什么不能直接显示上游响应？","relevance":{"safety.md":3},"expected_route":"local","allow_web":false}
+{"case_id":"unknown_local","question":"吉林大学今天食堂的菜单是什么？","relevance":{},"expected_route":"refused","allow_web":false}
+{"case_id":"unknown_web","question":"今天有哪些新的框架版本发布？","relevance":{},"expected_route":"web","allow_web":true}
