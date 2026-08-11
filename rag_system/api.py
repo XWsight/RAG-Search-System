@@ -27,7 +27,7 @@ from rag_system.catalog import (
     KnowledgeBaseStatus,
     KnowledgeBaseUnavailableError,
 )
-from rag_system.domain import AnswerRequest, AnswerResult, Citation, Route
+from rag_system.domain import AnswerClaim, AnswerRequest, AnswerResult, Citation, Route
 from rag_system.file_store import (
     DuplicateResourceError,
     FileStoreError,
@@ -83,6 +83,8 @@ from rag_system.web_ui import mount_web_ui
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,127})?")
 _RESOURCE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
 _SESSION_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+_CITATION_PATTERN = r"^[LW][1-9]\d*$"
+CitationId = Annotated[str, Field(min_length=2, max_length=16, pattern=_CITATION_PATTERN)]
 _UPLOAD_READ_SIZE = 64 * 1024
 _PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 
@@ -171,16 +173,22 @@ class RouteResponse(StrictModel):
 
 
 class CitationResponse(StrictModel):
-    id: str = Field(min_length=1, max_length=128)
+    id: CitationId
     source_name: str = Field(min_length=1, max_length=255)
     excerpt: str = Field(max_length=8_000)
     url: str = Field(default="", max_length=4_096)
     score: float | None = None
 
 
+class AnswerClaimResponse(StrictModel):
+    text: str = Field(min_length=1, max_length=2_000)
+    citation_ids: tuple[CitationId, ...] = Field(min_length=1, max_length=24)
+
+
 class AnswerResponse(StrictModel):
     answer: str = Field(max_length=200_000)
     decision: RouteResponse
+    claims: tuple[AnswerClaimResponse, ...] = Field(max_length=24)
     citations: tuple[CitationResponse, ...]
     trace_id: str = Field(min_length=1, max_length=128)
     latency_ms: float = Field(ge=0)
@@ -877,6 +885,10 @@ def _citation_response(citation: Citation) -> CitationResponse:
     )
 
 
+def _claim_response(claim: AnswerClaim) -> AnswerClaimResponse:
+    return AnswerClaimResponse(text=claim.text, citation_ids=claim.citation_ids)
+
+
 def _answer_response(result: AnswerResult, *, trace_id: str) -> AnswerResponse:
     return AnswerResponse(
         answer=result.answer,
@@ -884,6 +896,7 @@ def _answer_response(result: AnswerResult, *, trace_id: str) -> AnswerResponse:
             route=result.decision.route,
             confidence=max(0.0, min(1.0, result.decision.confidence)),
         ),
+        claims=tuple(_claim_response(item) for item in result.claims),
         citations=tuple(_citation_response(item) for item in result.citations),
         trace_id=trace_id,
         latency_ms=max(0.0, result.latency_ms),

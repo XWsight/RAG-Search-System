@@ -5,7 +5,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
-from rag_system.domain import Chunk, IndexRef, SearchHit, SourceDocument, WebSearchResult
+from rag_system.domain import (
+    Chunk,
+    GeneratedAnswer,
+    IndexRef,
+    SearchHit,
+    SourceDocument,
+    WebSearchResult,
+)
 
 
 class DocumentLoader(Protocol):
@@ -43,7 +50,11 @@ class ChatModel(Protocol):
     @property
     def available(self) -> bool: ...
 
-    def answer(self, question: str, evidence: Sequence[tuple[str, str]]) -> str: ...
+    def answer(
+        self,
+        question: str,
+        evidence: Sequence[tuple[str, str]],
+    ) -> GeneratedAnswer: ...
 
 
 class WebSearchProvider(Protocol):

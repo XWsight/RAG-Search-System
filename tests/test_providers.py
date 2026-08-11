@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from dataclasses import replace
 from typing import Any
@@ -7,6 +8,7 @@ from typing import Any
 import requests
 
 from rag_system.config import SecretValue, Settings
+from rag_system.domain import AnswerClaim, GeneratedAnswer
 from rag_system.providers import (
     ProviderAuthenticationError,
     ProviderError,
@@ -81,20 +83,45 @@ class ZhipuChatModelTests(unittest.TestCase):
         session = FakeSession(
             FakeResponse(
                 200,
-                {"choices": [{"message": {"content": "RAG 是检索增强生成。[S1]"}}]},
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"claims":[{"text":"RAG 是检索增强生成。",'
+                                    '"citation_ids":["L1"]}],"insufficient":false}'
+                                )
+                            }
+                        }
+                    ]
+                },
             )
         )
         model = ZhipuChatModel(configured_settings(), session=session, sleeper=lambda _: None)
 
-        answer = model.answer("什么是 RAG？", [("S1", "RAG 会先检索资料。")])
+        answer = model.answer("什么是 RAG？", [("L1", "RAG 会先检索资料。")])
 
-        self.assertEqual(answer, "RAG 是检索增强生成。[S1]")
+        self.assertEqual(
+            answer,
+            GeneratedAnswer((AnswerClaim("RAG 是检索增强生成。", ("L1",)),)),
+        )
         self.assertTrue(model.available)
         self.assertEqual(session.calls[0]["timeout"], (1.5, 4.5))
         self.assertEqual(session.calls[0]["headers"]["Authorization"], "Bearer test-private-key")
         messages = session.calls[0]["json"]["messages"]
         self.assertEqual(messages[0]["role"], "system")
         self.assertIn("不可信", messages[0]["content"])
+        self.assertIn("直接回答 question", messages[0]["content"])
+        self.assertEqual(
+            session.calls[0]["json"]["response_format"],
+            {"type": "json_object"},
+        )
+        self.assertEqual(
+            session.calls[0]["json"]["thinking"],
+            {"type": "disabled"},
+        )
+        self.assertIs(session.calls[0]["json"]["do_sample"], False)
+        self.assertEqual(session.calls[0]["json"]["max_tokens"], 4_096)
         self.assertNotIn("test-private-key", str(session.calls[0]["json"]))
 
     def test_authentication_error_is_not_retried_or_leaked(self) -> None:
@@ -112,11 +139,22 @@ class ZhipuChatModelTests(unittest.TestCase):
         delays: list[float] = []
         session = FakeSession(
             FakeResponse(429, {"error": "busy"}),
-            FakeResponse(200, {"choices": [{"message": {"content": "恢复成功"}}]}),
+            FakeResponse(
+                200,
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"claims":[],"insufficient":true}'
+                            }
+                        }
+                    ]
+                },
+            ),
         )
         model = ZhipuChatModel(configured_settings(retry_attempts=1), session=session, sleeper=delays.append)
 
-        self.assertEqual(model.answer("问题", []), "恢复成功")
+        self.assertEqual(model.answer("问题", []), GeneratedAnswer((), insufficient=True))
         self.assertEqual(len(session.calls), 2)
         self.assertEqual(delays, [0.25])
 
@@ -143,7 +181,18 @@ class ZhipuChatModelTests(unittest.TestCase):
         session = FakeSession(
             requests.Timeout("temporary"),
             rate_limited,
-            FakeResponse(200, {"choices": [{"message": {"content": "recovered"}}]}),
+            FakeResponse(
+                200,
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"claims":[],"insufficient":true}'
+                            }
+                        }
+                    ]
+                },
+            ),
         )
         model = ZhipuChatModel(
             configured_settings(retry_attempts=2),
@@ -151,7 +200,7 @@ class ZhipuChatModelTests(unittest.TestCase):
             sleeper=delays.append,
         )
 
-        self.assertEqual(model.answer("question", []), "recovered")
+        self.assertEqual(model.answer("question", []), GeneratedAnswer((), insufficient=True))
         self.assertEqual(delays, [0.25, 2.0])
 
     def test_invalid_json_and_missing_fields_are_protocol_errors(self) -> None:
@@ -162,7 +211,10 @@ class ZhipuChatModelTests(unittest.TestCase):
         )
         missing_content = ZhipuChatModel(
             configured_settings(),
-            session=FakeSession(FakeResponse(200, {"choices": [{"message": {}}]})),
+            session=FakeSession(
+                FakeResponse(200, {"choices": [{"message": {}}]}),
+                FakeResponse(200, {"choices": [{"message": {}}]}),
+            ),
             sleeper=lambda _: None,
         )
 
@@ -170,6 +222,153 @@ class ZhipuChatModelTests(unittest.TestCase):
             invalid_json.answer("问题", [])
         with self.assertRaises(ProviderProtocolError):
             missing_content.answer("问题", [])
+
+    def test_grounded_answer_contract_rejects_unsupported_or_uncited_claims(self) -> None:
+        invalid_answers = (
+            '{"claims":[{"text":"无引用结论","citation_ids":[]}],"insufficient":false}',
+            '{"claims":[{"text":"越界结论","citation_ids":["W9"]}],"insufficient":false}',
+            '{"claims":[{"text":"重复键","text":"冲突","citation_ids":["L1"]}],'
+            '"insufficient":false}',
+            '{"claims":[],"insufficient":false}',
+        )
+        for content in invalid_answers:
+            with self.subTest(content=content):
+                model = ZhipuChatModel(
+                    configured_settings(),
+                    session=FakeSession(
+                        FakeResponse(200, {"choices": [{"message": {"content": content}}]}),
+                        FakeResponse(200, {"choices": [{"message": {"content": content}}]}),
+                    ),
+                    sleeper=lambda _: None,
+                )
+                with self.assertRaises(ProviderProtocolError):
+                    model.answer("问题", [("L1", "证据")])
+
+    def test_grounded_answer_rejects_overlong_claim_instead_of_truncating_it(self) -> None:
+        content = json.dumps(
+            {
+                "claims": [{"text": "字" * 2_001, "citation_ids": ["L1"]}],
+                "insufficient": False,
+            },
+            ensure_ascii=False,
+        )
+        model = ZhipuChatModel(
+            configured_settings(),
+            session=FakeSession(
+                FakeResponse(200, {"choices": [{"message": {"content": content}}]}),
+                FakeResponse(200, {"choices": [{"message": {"content": content}}]}),
+            ),
+            sleeper=lambda _: None,
+        )
+
+        with self.assertRaises(ProviderProtocolError) as caught:
+            model.answer("问题", [("L1", "证据")])
+
+        self.assertEqual(caught.exception.code, "answer_grounding_contract")
+
+    def test_grounded_answer_retries_one_protocol_failure_without_echoing_it(self) -> None:
+        session = FakeSession(
+            FakeResponse(200, {"choices": [{"message": {"content": "untrusted-invalid"}}]}),
+            FakeResponse(
+                200,
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"claims":[{"text":"有效结论。",'
+                                    '"citation_ids":["L1"]}],"insufficient":false}'
+                                )
+                            }
+                        }
+                    ]
+                },
+            ),
+        )
+        model = ZhipuChatModel(configured_settings(), session=session, sleeper=lambda _: None)
+        answer = model.answer("问题", [("L1", "证据")])
+        self.assertEqual(answer.claims[0].text, "有效结论。")
+        self.assertEqual(len(session.calls), 2)
+        retry_messages = session.calls[1]["json"]["messages"]
+        self.assertNotIn("untrusted-invalid", str(retry_messages))
+        self.assertIn("上一次输出未通过", retry_messages[-1]["content"])
+
+    def test_truncated_grounded_answer_is_retried_once_and_can_recover(self) -> None:
+        session = FakeSession(
+            FakeResponse(
+                200,
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "message": {"content": ""},
+                        }
+                    ]
+                },
+            ),
+            FakeResponse(
+                200,
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "content": (
+                                    '{"claims":[{"text":"有效结论。",'
+                                    '"citation_ids":["L1"]}],"insufficient":false}'
+                                )
+                            },
+                        }
+                    ]
+                },
+            ),
+        )
+        model = ZhipuChatModel(configured_settings(), session=session, sleeper=lambda _: None)
+
+        answer = model.answer("问题", [("L1", "证据")])
+
+        self.assertEqual(answer.claims[0].text, "有效结论。")
+        self.assertEqual(len(session.calls), 2)
+
+    def test_repeated_truncation_fails_with_stable_error_code(self) -> None:
+        truncated = {
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {"content": ""},
+                }
+            ]
+        }
+        session = FakeSession(FakeResponse(200, truncated), FakeResponse(200, truncated))
+        model = ZhipuChatModel(configured_settings(), session=session, sleeper=lambda _: None)
+
+        with self.assertRaises(ProviderProtocolError) as caught:
+            model.answer("问题", [("L1", "证据")])
+
+        self.assertEqual(caught.exception.code, "answer_output_truncated")
+        self.assertEqual(len(session.calls), 2)
+
+    def test_non_repairable_finish_reason_is_not_retried(self) -> None:
+        session = FakeSession(
+            FakeResponse(
+                200,
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "sensitive",
+                            "message": {"content": ""},
+                        }
+                    ]
+                },
+            )
+        )
+        model = ZhipuChatModel(configured_settings(), session=session, sleeper=lambda _: None)
+
+        with self.assertRaises(ProviderProtocolError) as caught:
+            model.answer("问题", [("L1", "证据")])
+
+        self.assertEqual(caught.exception.code, "answer_incomplete")
+        self.assertEqual(len(session.calls), 1)
 
     def test_missing_key_is_unavailable_without_network(self) -> None:
         session = FakeSession()
@@ -203,6 +402,11 @@ class ZhipuChatModelTests(unittest.TestCase):
             session.calls[0]["json"]["response_format"],
             {"type": "json_object"},
         )
+        self.assertEqual(
+            session.calls[0]["json"]["thinking"],
+            {"type": "disabled"},
+        )
+        self.assertIs(session.calls[0]["json"]["do_sample"], False)
 
     def test_query_plan_rejects_invalid_json_schema(self) -> None:
         for content in ("not-json", '{"items":["q"]}', '{"queries":[]}'):

@@ -16,14 +16,14 @@ Web 工作台覆盖知识库创建、异步索引进度、知识库切换与删�
 | --- | --- |
 | 文档摄取 | TXT、Markdown、HTML、DOCX、PDF；大小、页数、字符数、压缩包膨胀和路径安全边界 |
 | 检索 | 中文 Embedding、Chroma 余弦检索、BM25、RRF 融合、来源多样化、可选 CrossEncoder 重排序 |
-| 回答 | 本地 / 混合 / 网络 / 拒答路由；请求级云端与联网授权；引用白名单审计 |
+| 回答 | 本地 / 混合 / 网络 / 拒答路由；请求级云端与联网授权；原子结论—证据结构化契约 |
 | 研究模式 | 有界查询拆解、多查询检索融合、多次网络补充；无无限 ReAct 循环 |
 | 会话 | TTL、LRU、轮数与字符数上限；租户、知识库和浏览器会话三重隔离 |
 | 数据生命周期 | 原子上传、SHA-256 清单校验、持久索引复用、残缺集合重建、耐久取消意图、显式删除 |
 | 产品界面 | 同源 Web 工作台、拖放上传、任务进度、知识库管理、多轮问答、引用证据与隐私开关 |
 | 服务边界 | API Key / Bearer、reader / writer / operator、租户隔离、持久幂等、后台任务、限流 |
 | 可运维性 | liveness/readiness、隐私安全 JSON 事件、Prometheus 指标、Docker Compose、备份恢复手册 |
-| 质量 | 离线 Recall/MRR/nDCG、逐题失败诊断、P50/P95/P99、冻结质量门禁、阈值校准、Python 3.11/3.12 CI |
+| 质量 | 检索 Recall/MRR/nDCG、回答事实/拒答/原子性/归因、逐题诊断、冻结质量门禁、Python 3.11/3.12 CI |
 
 ## 架构
 
@@ -165,6 +165,20 @@ python scripts\benchmark_retrieval.py evals\retrieval_cases.jsonl `
 
 在当前本地模型标识与默认配置下，当前 18 题 Hybrid 开发基线的 Recall@5、MRR@5、nDCG@5 和路由准确率均为 `1.0000`。该门禁需要下载并运行 Embedding 模型，因此是发布前手动门禁，不在默认 CI 中执行。该集合专门加入了语义改写、本地越界和必须联网的对抗题，仍然只是开发回归证据，不是生产质量或真实业务泛化证明。
 
+云端生成不再把引用关系藏在自由文本中。模型必须返回由原子 `claims`、每条结论的 `citation_ids` 和明确的 `insufficient` 状态组成的 JSON；供应商适配器与应用服务会分别校验同一证据契约，API 同时返回可直接审计的 `claims` 映射和兼容展示用文本。该机制保证引用 ID 存在且每条生成结论都有归因，但**不等于语义蕴含或事实正确性已经被证明**。
+
+结构化回答另有独立的真实模型基准，不复用检索成绩：
+
+```powershell
+python scripts\benchmark_answers.py evals\answer_cases.jsonl `
+  --dotenv .env `
+  --quality-gate evals\gates\answer-live.json `
+  --json-output reports\answers-live.json `
+  --markdown-output reports\answers-live.md
+```
+
+2026-08-11 的一次 4 题/8 原子事实开发运行中，结构契约、拒答、事实召回、原子结论和归因五项均为 `1.0000`。这是会受模型版本与随机性影响的手动发布冒烟结果；门禁最低值为 `0.75`，不在默认 CI 中执行，也不能外推为生产准确率。
+
 评测协议、数据泄漏防范与阈值校准见[评测文档](docs/evaluation.md)。仓库中的 `evals/sample_dataset.jsonl` 是评测格式夹具，不是系统性能证明。
 
 ## 项目结构
@@ -182,7 +196,10 @@ rag_system/
   retrieval.py        # Chroma、混合检索、路由和索引持久化
   benchmark.py        # 检索指标、逐题诊断与延迟分位数
   quality_gate.py     # 绑定数据集的严格回归门禁
+  answer_benchmark.py # 结构化回答事实、拒答、原子性与归因评测
+  answer_quality_gate.py # 绑定回答数据集的手动发布门禁
   service.py          # 问答、联网、研究模式、引用和会话编排
+  grounding.py        # 原子结论、证据归因校验与稳定渲染
   metrics.py          # 有界 Prometheus 指标
   observability.py    # 不记录问题/文档正文的结构化事件
 evals/                # 标注检索集、离线评测夹具与冻结质量门禁

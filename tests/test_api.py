@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from rag_system.api import create_app
 from rag_system.catalog import DocumentManifest, KnowledgeBaseRecord, KnowledgeBaseStatus
 from rag_system.config import Settings
-from rag_system.domain import AnswerResult, Citation, Route, RouteDecision
+from rag_system.domain import AnswerClaim, AnswerResult, Citation, Route, RouteDecision
 from rag_system.idempotency import IdempotencyConflictError
 from rag_system.jobs import JobId, JobSnapshot, JobStatus
 from rag_system.metrics import create_operational_metrics
@@ -136,9 +136,15 @@ class FakePlatform:
         return AnswerResult(
             answer="RAG retrieves evidence before generation.",
             decision=RouteDecision(Route.LOCAL, 0.91, "internal routing explanation"),
+            claims=(
+                AnswerClaim(
+                    text="RAG retrieves evidence before generation.",
+                    citation_ids=("L1",),
+                ),
+            ),
             citations=(
                 Citation(
-                    citation_id="source-1",
+                    citation_id="L1",
                     source_name="guide.md",
                     excerpt="Grounded evidence.",
                     score=0.88,
@@ -458,6 +464,15 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn("internal routing explanation", response.text)
         self.assertNotIn("internal-trace-must-not-leak", response.text)
         self.assertNotIn("internal_secret", response.text)
+        self.assertEqual(
+            payload["claims"],
+            [
+                {
+                    "text": "RAG retrieves evidence before generation.",
+                    "citation_ids": ["L1"],
+                }
+            ],
+        )
         self.assertTrue(self.platform.last_answer_request.allow_cloud)
 
         unknown = self.client.post(

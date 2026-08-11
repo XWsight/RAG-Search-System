@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "dataset_digest": "cb234975cbaf3a67",
+  "minimum_metrics": {
+    "contract_success_rate": 0.75,
+    "refusal_accuracy": 0.75,
+    "fact_recall": 0.75,
+    "atomic_claim_rate": 0.75,
+    "attribution_precision": 0.75
+  }
+}

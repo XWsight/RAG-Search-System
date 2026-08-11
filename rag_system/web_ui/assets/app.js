@@ -440,6 +440,9 @@ function appendAnswerDetails(article, result) {
   if (typeof result.latency_ms === "number") {
     meta.append(node("span", "", `${Math.round(result.latency_ms)} ms`));
   }
+  if (Array.isArray(result.claims) && result.claims.length) {
+    meta.append(node("span", "", `${result.claims.length} 条逐项引用`));
+  }
   const copy = node("button", "copy-answer", "复制回答");
   copy.type = "button";
   copy.addEventListener("click", async () => {

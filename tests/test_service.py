@@ -5,8 +5,10 @@ from contextlib import contextmanager
 
 from rag_system.config import Settings
 from rag_system.domain import (
+    AnswerClaim,
     AnswerRequest,
     Chunk,
+    GeneratedAnswer,
     Route,
     SearchHit,
     WebSearchResult,
@@ -37,8 +39,10 @@ class FakeIndexManager:
 
 
 class FakeChat:
-    def __init__(self, answer="基于资料的回答 [L1]。", *, available=True, error=None):
-        self.response = answer
+    def __init__(self, answer=None, *, available=True, error=None):
+        self.response = answer or GeneratedAnswer(
+            (AnswerClaim("基于资料的回答。", ("L1",)),)
+        )
         self.available = available
         self.error = error
         self.calls = 0
@@ -120,7 +124,7 @@ class RagServiceTests(unittest.TestCase):
         web_result = WebSearchResult("r", "可靠来源", "联网找到的资料", "https://example.com")
         service, chat, web = self.build_service(
             make_hit(0.05, ("dense",)),
-            chat=FakeChat("联网回答 [W1]。"),
+            chat=FakeChat(GeneratedAnswer((AnswerClaim("联网回答。", ("W1",)),))),
             web=FakeWeb([web_result]),
         )
         result = service.answer("idx", AnswerRequest("联网问题", "s", True, True))
@@ -129,13 +133,32 @@ class RagServiceTests(unittest.TestCase):
         self.assertEqual(chat.calls, 1)
         self.assertEqual(result.citations[0].citation_id, "W1")
 
-    def test_invalid_model_citations_are_removed(self) -> None:
-        service, _, _ = self.build_service(make_hit(0.9), chat=FakeChat("正确 [L1]，错误 [W99]。"))
+    def test_claims_are_rendered_with_an_explicit_evidence_mapping(self) -> None:
+        service, _, _ = self.build_service(
+            make_hit(0.9),
+            chat=FakeChat(
+                GeneratedAnswer(
+                    (
+                        AnswerClaim("结论一。", ("L1",)),
+                        AnswerClaim("结论二。", ("L1",)),
+                    )
+                )
+            ),
+        )
         result = service.answer("idx", AnswerRequest("问题", "s", True, False))
-        self.assertIn("[L1]", result.answer)
-        self.assertNotIn("[W99]", result.answer)
-        self.assertEqual(result.diagnostics["invalid_citations_removed"], 1)
-        self.assertEqual(result.diagnostics["invalid_citations"], 0)
+        self.assertEqual(result.answer, "结论一。 [L1]\n\n结论二。 [L1]")
+        self.assertEqual(result.claims[0].citation_ids, ("L1",))
+        self.assertEqual(result.diagnostics["grounded_claim_count"], 2)
+        self.assertEqual(result.diagnostics["grounding_citation_count"], 2)
+
+    def test_invalid_model_grounding_fails_closed_instead_of_editing_text(self) -> None:
+        invalid = GeneratedAnswer((AnswerClaim("没有可用依据的结论。", ("W99",)),))
+        service, _, _ = self.build_service(make_hit(0.9), chat=FakeChat(invalid))
+        result = service.answer("idx", AnswerRequest("问题", "s", True, False))
+        self.assertEqual(result.decision.route, Route.ERROR)
+        self.assertEqual(result.claims, ())
+        self.assertNotIn("没有可用依据", result.answer)
+        self.assertEqual(result.diagnostics["provider_error"], "GroundingContractError")
 
     def test_provider_failure_preserves_retrieved_evidence(self) -> None:
         chat = FakeChat(error=ProviderUnavailableError("offline"))

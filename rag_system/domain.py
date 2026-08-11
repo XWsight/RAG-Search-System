@@ -65,6 +65,22 @@ class Citation:
 
 
 @dataclass(frozen=True, slots=True)
+class AnswerClaim:
+    """One atomic generated statement and the evidence IDs attributed to it."""
+
+    text: str
+    citation_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedAnswer:
+    """Structured output produced by a chat model before application validation."""
+
+    claims: tuple[AnswerClaim, ...]
+    insufficient: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class RouteDecision:
     route: Route
     confidence: float
@@ -92,6 +108,7 @@ class AnswerRequest:
 class AnswerResult:
     answer: str
     decision: RouteDecision
+    claims: tuple[AnswerClaim, ...] = ()
     citations: tuple[Citation, ...] = ()
     hits: tuple[SearchHit, ...] = ()
     trace_id: str = ""

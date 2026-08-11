@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import re
 import time
 from collections.abc import Sequence
 from uuid import uuid4
 
 from rag_system.config import Settings
 from rag_system.domain import (
+    AnswerClaim,
     AnswerRequest,
     AnswerResult,
     Citation,
@@ -18,19 +18,20 @@ from rag_system.domain import (
     SearchHit,
     WebSearchResult,
 )
+from rag_system.grounding import (
+    GroundingContractError,
+    render_grounded_answer,
+    validate_grounded_answer,
+)
 from rag_system.index_manager import IndexManager
 from rag_system.ingestion import IngestionResult
 from rag_system.memory import ConversationMemory
 from rag_system.ports import ChatModel, QueryPlanner, Retriever, WebSearchProvider
 from rag_system.providers import ProviderError
-from rag_system.ranking import audit_citations
 from rag_system.research import fuse_query_hits, normalize_query_plan
 from rag_system.retrieval import RoutingPolicy
 from rag_system.text import truncate_text
 from rag_system.web import rank_web_results
-
-
-_CITATION_TOKEN = re.compile(r"\[((?:L|W)\d+)\]")
 
 
 class RagService:
@@ -181,6 +182,9 @@ class RagService:
             )
             return self._remember_result(request, question, result)
 
+        claims: tuple[AnswerClaim, ...] = ()
+        grounding_claim_count = 0
+        grounding_citation_count = 0
         if not request.allow_cloud or not self.chat_model.available:
             retrieval_decision = RouteDecision(
                 Route.RETRIEVAL_ONLY,
@@ -190,8 +194,14 @@ class RagService:
             answer = self._retrieval_only_answer(citations)
         else:
             try:
-                answer = self.chat_model.answer(question, evidence)
-            except ProviderError as error:
+                generated_answer = self.chat_model.answer(question, evidence)
+                allowed_ids = tuple(citation.citation_id for citation in citations)
+                grounding_audit = validate_grounded_answer(generated_answer, allowed_ids)
+                answer = render_grounded_answer(generated_answer)
+                claims = generated_answer.claims
+                grounding_claim_count = grounding_audit.claim_count
+                grounding_citation_count = grounding_audit.citation_count
+            except (ProviderError, GroundingContractError) as error:
                 result = self._result(
                     answer="生成服务暂时不可用。你仍可以查看下方检索证据。",
                     decision=RouteDecision(Route.ERROR, decision.confidence, "生成服务调用失败。"),
@@ -211,22 +221,19 @@ class RagService:
                 return self._remember_result(request, question, result)
             retrieval_decision = decision
 
-        allowed_ids = tuple(citation.citation_id for citation in citations)
-        raw_citation_audit = audit_citations(answer, allowed_ids)
-        answer = self._remove_invalid_citations(answer, allowed_ids)
-        citation_audit = audit_citations(answer, allowed_ids)
         result = self._result(
             answer=answer,
             decision=retrieval_decision,
+            claims=claims,
             citations=citations,
             hits=hits,
             trace_id=trace_id,
             started=started,
             diagnostics={
                 "evidence_count": len(evidence),
-                "citation_completeness": round(citation_audit.completeness, 4),
-                "invalid_citations_removed": len(raw_citation_audit.invalid_ids),
-                "invalid_citations": len(citation_audit.invalid_ids),
+                "grounded_claim_count": grounding_claim_count,
+                "grounding_citation_count": grounding_citation_count,
+                "citation_completeness": 1.0 if claims else 0.0,
                 "web_error": web_error,
                 "web_domain_count": web_domain_count,
                 "history_turns": history_turns,
@@ -358,14 +365,6 @@ class RagService:
         )
         return "\n\n".join(lines)
 
-    @staticmethod
-    def _remove_invalid_citations(answer: str, allowed_ids: Sequence[str]) -> str:
-        allowed = set(allowed_ids)
-        return _CITATION_TOKEN.sub(
-            lambda match: match.group(0) if match.group(1) in allowed else "",
-            answer,
-        ).strip()
-
     def _result(
         self,
         *,
@@ -376,11 +375,13 @@ class RagService:
         trace_id: str,
         started: float,
         diagnostics: dict[str, float | int | str],
+        claims: Sequence[AnswerClaim] = (),
     ) -> AnswerResult:
         latency_ms = max(0.0, (self.timer() - started) * 1_000)
         return AnswerResult(
             answer=answer,
             decision=decision,
+            claims=tuple(claims),
             citations=tuple(citations),
             hits=tuple(hits),
             trace_id=trace_id,
