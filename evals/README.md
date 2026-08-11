@@ -12,7 +12,7 @@
 - `expected_route` 只能是 `local`、`refused` 或 `web`；
 - `allow_web` 仅在期望 `web` 时为 `true`；
 - 同一来源文件只能属于 development、validation、test 中一个 split；
-- test 用于冻结后的最终复核，不用于挑选阈值、模型或融合权重。
+- test 用于冻结后的最终复核，不用于挑选阈值、模型或融合权重；一旦输出被用于修复，它就转为公开回归集。
 
 当前最低覆盖由 manifest 自身声明。严格 loader 会检查精确字段、问题去重、路由一致性、安全相对路径、普通来源文件、source-level split 隔离和覆盖矩阵。验证命令：
 
@@ -51,6 +51,6 @@ python scripts\validate_answer_suite.py evals\answer_suite.json `
 
 ## Reporting rules
 
-每份检索结果必须同时报告：commit、suite ID、ground-truth digest、问题数、family 数、来源数、split、模型与切分配置、top-k、全部指标、路由混淆矩阵、按 split/category/difficulty/expected route 的切片，以及逐题失败。路由调优还必须保留不含正文的首名/次名、分差、ranker agreement、词法支撑和置信度信号，不能只报告最终阈值。回答结果必须报告 commit、suite digest、case/fact 数、split、provider/model 配置、总体五项指标，以及按 category、difficulty、risk tag 切分的全部结果和失败 case；不得把 50 个 case 描述为真实业务准确率，也不得隐藏较差切片。
+每份检索结果必须同时报告：commit、suite ID、ground-truth digest、问题数、family 数、来源数、split、模型与切分配置、top-k、全部指标、路由混淆矩阵、按 split/category/difficulty/expected route 的切片，以及逐题失败。路由调优还必须保留不含正文的 query intent/rule ID、首名/次名、分差、ranker agreement、词法支撑和置信度信号，不能只报告最终阈值。回答结果必须报告 commit、suite digest、case/fact 数、split、provider/model 配置、总体五项指标，以及按 category、difficulty、risk tag 切分的全部结果和失败 case；不得把 50 个 case 描述为真实业务准确率，也不得隐藏较差切片。
 
 `retrieval-suite.json` 冻结 manifest、全部 corpus 内容摘要和覆盖矩阵；BM25 full-suite gate 冻结确定性指标下限；Hybrid gate 是需要本地模型的手动下限。更新任何契约都必须附带失败样例、人工复核和明确理由，不能只修改 gate 让 CI 变绿。

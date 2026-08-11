@@ -11,7 +11,7 @@ from rag_system.benchmark import (
 from rag_system.config import Settings
 from rag_system.domain import Chunk, Route, SearchHit
 from rag_system.evaluation import DatasetValidationError
-from rag_system.retrieval import RoutingPolicy
+from rag_system.routing import RoutingPolicy
 
 
 def hit(source: str, score: float = 0.9) -> SearchHit:
@@ -72,7 +72,7 @@ class RetrievalBenchmarkTests(unittest.TestCase):
         self.assertAlmostEqual(run.latency.p99_ms, 29.8)
         self.assertIn("逐题结果", run.to_markdown())
         payload = json.loads(run.to_json())
-        self.assertEqual(payload["schema_version"], 3)
+        self.assertEqual(payload["schema_version"], 4)
         self.assertEqual(
             set(payload["predictions"][0]["routing_signal"]),
             {
@@ -83,6 +83,8 @@ class RetrievalBenchmarkTests(unittest.TestCase):
                 "lexical_score",
                 "lexical_support",
                 "confidence",
+                "query_intent",
+                "intent_rule",
             },
         )
         self.assertEqual(payload["report"]["case_count"], 2)

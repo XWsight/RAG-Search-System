@@ -19,7 +19,7 @@ from rag_system.evaluation import DatasetValidationError  # noqa: E402
 from rag_system.ingestion import DocumentIngestor  # noqa: E402
 from rag_system.quality_gate import evaluate_quality_gate, load_quality_gate  # noqa: E402
 from rag_system.retrieval_analysis import build_retrieval_suite_report  # noqa: E402
-from rag_system.retrieval import RoutingPolicy  # noqa: E402
+from rag_system.routing import RoutingPolicy  # noqa: E402
 from rag_system.sparse import BM25Index, SparseDocument  # noqa: E402
 from rag_system.text import lexical_relevance  # noqa: E402
 

@@ -12,7 +12,7 @@ from rag_system.config import Settings
 from rag_system.domain import Chunk, SearchHit
 from rag_system.evaluation import DatasetValidationError
 from rag_system.evaluation_suite import EvaluationSuiteError
-from rag_system.retrieval import RoutingPolicy
+from rag_system.routing import RoutingPolicy
 from rag_system.retrieval_analysis import build_retrieval_suite_report
 
 
@@ -76,17 +76,17 @@ class RetrievalBenchmarkSuiteTests(unittest.TestCase):
     def test_repository_suite_has_declared_coverage(self) -> None:
         suite = load_retrieval_suite(PROJECT_ROOT / "evals" / "retrieval_suite.json")
 
-        self.assertEqual(len(suite.cases), 200)
-        self.assertEqual(len(suite.families), 50)
+        self.assertEqual(len(suite.cases), 216)
+        self.assertEqual(len(suite.families), 54)
         self.assertEqual(len(suite.documents), 10)
         self.assertEqual(
             suite.summary()["cases_by_split"],
-            {"development": 80, "test": 60, "validation": 60},
+            {"development": 88, "test": 60, "validation": 68},
         )
         self.assertEqual(
-            suite.summary()["cases_by_route"], {"local": 160, "refused": 20, "web": 20}
+            suite.summary()["cases_by_route"], {"local": 160, "refused": 36, "web": 20}
         )
-        self.assertEqual(len(suite.cases_for_split("validation")), 60)
+        self.assertEqual(len(suite.cases_for_split("validation")), 68)
         self.assertEqual(len(suite.documents_for_split("validation")), 3)
         self.assertIn("Semantic families", suite.to_markdown())
         validate_suite_contract(
@@ -201,7 +201,7 @@ class RetrievalBenchmarkSuiteTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertEqual(json.loads(json_output.read_text(encoding="utf-8"))["case_count"], 200)
+            self.assertEqual(json.loads(json_output.read_text(encoding="utf-8"))["case_count"], 216)
             self.assertIn("Coverage matrix", markdown_output.read_text(encoding="utf-8"))
 
     def test_sparse_command_runs_a_source_isolated_suite_split(self) -> None:
@@ -224,7 +224,7 @@ class RetrievalBenchmarkSuiteTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             payload = json.loads(json_output.read_text(encoding="utf-8"))
-            self.assertEqual(payload["report"]["case_count"], 60)
+            self.assertEqual(payload["report"]["case_count"], 68)
             self.assertEqual(payload["evaluated_split"], "validation")
             self.assertTrue(payload["slices"])
             self.assertTrue(payload["route_confusion"])
@@ -263,14 +263,14 @@ class RetrievalBenchmarkSuiteTests(unittest.TestCase):
         self.assertTrue(
             all(item.routing_signals.top_score.p50 >= 0.0 for item in report.slices)
         )
-        self.assertEqual(
+        self.assertAlmostEqual(
             report.slices[0].to_dict()["routing_signals"]["ranker_agreement_rate"],
-            0.8,
+            64 / 88,
         )
         self.assertIn("路由混淆矩阵", report.to_markdown())
         self.assertIn("margin p50", report.to_markdown())
         self.assertIn("N/A", report.to_markdown())
-        self.assertEqual(json.loads(report.to_json())["report"]["case_count"], 200)
+        self.assertEqual(json.loads(report.to_json())["report"]["case_count"], 216)
 
         with self.assertRaisesRegex(EvaluationSuiteError, "prediction order"):
             build_retrieval_suite_report(
@@ -283,7 +283,7 @@ class RetrievalBenchmarkSuiteTests(unittest.TestCase):
         with self.assertRaisesRegex(EvaluationSuiteError, "counts do not match"):
             build_retrieval_suite_report(
                 suite,
-                replace(benchmark, report=replace(benchmark.report, case_count=199)),
+                replace(benchmark, report=replace(benchmark.report, case_count=215)),
             )
 
     class _SuiteContext:

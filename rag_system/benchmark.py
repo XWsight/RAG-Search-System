@@ -19,7 +19,7 @@ from rag_system.evaluation import (
     evaluate_cases,
 )
 from rag_system.ports import Retriever
-from rag_system.retrieval import RoutingPolicy, RoutingSignal
+from rag_system.routing import RoutingPolicy, RoutingSignal
 
 
 _CASE_FIELDS = frozenset(
@@ -115,7 +115,7 @@ class RetrievalBenchmarkRun:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": 3,
+            "schema_version": 4,
             "report": self.report.to_dict(),
             "latency": self.latency.to_dict(),
             "predictions": [prediction.to_dict() for prediction in self.predictions],
@@ -271,7 +271,11 @@ def run_retrieval_benchmark(
     for case in cases:
         started_at = clock()
         hits = tuple(retriever.search(case.question, top_k=top_k))
-        assessment = routing.assess(hits, allow_web=case.allow_web)
+        assessment = routing.assess(
+            hits,
+            allow_web=case.allow_web,
+            question=case.question,
+        )
         decision = assessment.decision
         finished_at = clock()
         if not all(math.isfinite(value) for value in (started_at, finished_at)):

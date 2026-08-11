@@ -17,7 +17,7 @@ from rag_system.quality_gate import (
     load_quality_gate,
     quality_gate_from_mapping,
 )
-from rag_system.retrieval import RoutingPolicy
+from rag_system.routing import RoutingPolicy
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

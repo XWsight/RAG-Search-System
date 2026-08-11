@@ -79,7 +79,7 @@ CI 在 Python 3.11/3.12 上执行单元测试、Ruff、分支覆盖率门槛和�
 - 是否运行真实 hybrid、云端、人工、延迟或安全测试；
 - 未运行项目和原因。
 
-`evals/sample_dataset.jsonl` 只是指标夹具。不得用它声明实际系统性能。18-case BM25/Hybrid、200-question/50-family 检索套件、50-case/70-fact 回答套件和 4-case/8-fact 云端回答结果都只是仓库内回归基线，也不得外推为真实客户分布或生产质量。
+`evals/sample_dataset.jsonl` 只是指标夹具。不得用它声明实际系统性能。18-case BM25/Hybrid、216-question/54-family 检索套件、50-case/70-fact 回答套件和 4-case/8-fact 云端回答结果都只是仓库内回归基线，也不得外推为真实客户分布或生产质量。公开 test 一旦用于定位或修复失败，就只能作为后续回归集，不能继续称为无偏盲测。
 
 若有意更新 [`evals/gates/bm25-smoke.json`](evals/gates/bm25-smoke.json) 或 [`evals/gates/bm25-foundation.json`](evals/gates/bm25-foundation.json)，提交必须解释数据集摘要变化、语义家族与 split 覆盖、逐题差异和门槛调整理由。不得为了让退化代码通过而单独降低门槛；同一来源不得跨 development/validation/test 泄漏。
 

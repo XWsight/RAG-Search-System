@@ -97,7 +97,7 @@ class Settings:
     fused_candidates: int = field(default_factory=lambda: _env_int("RAG_FUSED_CANDIDATES", 12))
     final_evidence_count: int = field(default_factory=lambda: _env_int("RAG_FINAL_EVIDENCE", 5))
     local_confidence_threshold: float = field(
-        default_factory=lambda: _env_float("RAG_LOCAL_CONFIDENCE", 0.655070)
+        default_factory=lambda: _env_float("RAG_LOCAL_CONFIDENCE", 0.590000)
     )
     hybrid_confidence_ratio: float = field(
         default_factory=lambda: _env_float("RAG_HYBRID_CONFIDENCE_RATIO", 0.95)

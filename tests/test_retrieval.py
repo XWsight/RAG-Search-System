@@ -7,7 +7,8 @@ from pathlib import Path
 
 from rag_system.config import Settings
 from rag_system.domain import Chunk, IndexRef, Route, SearchHit
-from rag_system.retrieval import ChromaIndexRepository, HybridRetriever, RoutingPolicy
+from rag_system.retrieval import ChromaIndexRepository, HybridRetriever
+from rag_system.routing import RoutingPolicy
 
 
 def make_chunk(chunk_id: str, document_id: str, text: str) -> Chunk:

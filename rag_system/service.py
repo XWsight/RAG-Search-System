@@ -29,7 +29,7 @@ from rag_system.memory import ConversationMemory
 from rag_system.ports import ChatModel, QueryPlanner, Retriever, WebSearchProvider
 from rag_system.provider_errors import ProviderError
 from rag_system.research import fuse_query_hits, normalize_query_plan
-from rag_system.retrieval import RoutingPolicy
+from rag_system.routing import RoutingPolicy
 from rag_system.text import truncate_text
 from rag_system.web import rank_web_results
 
@@ -116,7 +116,11 @@ class RagService:
                 retrieval_queries,
                 deep_research=request.deep_research,
             )
-        decision = self.routing.decide(hits, allow_web=request.allow_web)
+        decision = self.routing.decide(
+            hits,
+            allow_web=request.allow_web,
+            question=question,
+        )
         if (
             request.deep_research
             and request.allow_web

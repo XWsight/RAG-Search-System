@@ -6,12 +6,11 @@ import stat
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, cast
 
 from rag_system.config import Settings
-from rag_system.domain import Chunk, IndexRef, Route, RouteDecision, SearchHit
+from rag_system.domain import Chunk, IndexRef, SearchHit
 from rag_system.ports import IndexRepository, Reranker, VectorIndex
 from rag_system.ranking import reciprocal_rank_fusion
 from rag_system.reranking import RerankerError
@@ -386,117 +385,3 @@ class HybridRetriever:
             if len(selected) >= top_k:
                 break
         return selected
-
-
-@dataclass(frozen=True, slots=True)
-class RoutingSignal:
-    """Bounded, content-free evidence used to explain one routing decision."""
-
-    top_score: float
-    second_score: float
-    margin: float
-    ranker_agreement: bool
-    lexical_score: float
-    lexical_support: float
-    confidence: float
-
-    @classmethod
-    def empty(cls) -> RoutingSignal:
-        return cls(0.0, 0.0, 0.0, False, 0.0, 0.0, 0.0)
-
-    def to_dict(self) -> dict[str, float | bool]:
-        return {
-            "top_score": round(self.top_score, 12),
-            "second_score": round(self.second_score, 12),
-            "margin": round(self.margin, 12),
-            "ranker_agreement": self.ranker_agreement,
-            "lexical_score": round(self.lexical_score, 12),
-            "lexical_support": round(self.lexical_support, 12),
-            "confidence": round(self.confidence, 12),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class RoutingAssessment:
-    """Public route decision paired with privacy-safe diagnostic evidence."""
-
-    decision: RouteDecision
-    signal: RoutingSignal
-
-
-class RoutingPolicy:
-    def __init__(self, settings: Settings) -> None:
-        self.settings = settings.validate()
-
-    def decide(self, hits: Sequence[SearchHit], *, allow_web: bool) -> RouteDecision:
-        return self.assess(hits, allow_web=allow_web).decision
-
-    def assess(
-        self, hits: Sequence[SearchHit], *, allow_web: bool
-    ) -> RoutingAssessment:
-        """Return both the public decision and its bounded diagnostic signals."""
-
-        if not hits:
-            signal = RoutingSignal.empty()
-            return RoutingAssessment(
-                RouteDecision(
-                    route=Route.WEB if allow_web else Route.REFUSED,
-                    confidence=0.0,
-                    reason="本地检索没有返回候选证据。",
-                ),
-                signal,
-            )
-
-        signal = self.signal(hits)
-        confidence = signal.confidence
-
-        if confidence >= self.settings.local_confidence_threshold:
-            decision = RouteDecision(Route.LOCAL, confidence, "本地证据达到置信度阈值。")
-            return RoutingAssessment(decision, signal)
-        hybrid_threshold = (
-            self.settings.local_confidence_threshold * self.settings.hybrid_confidence_ratio
-        )
-        if allow_web and confidence >= hybrid_threshold:
-            decision = RouteDecision(Route.HYBRID, confidence, "本地证据不完整，将补充网络来源。")
-            return RoutingAssessment(decision, signal)
-        if allow_web:
-            decision = RouteDecision(Route.WEB, confidence, "本地证据不足，将使用网络来源。")
-            return RoutingAssessment(decision, signal)
-        decision = RouteDecision(Route.REFUSED, confidence, "本地证据不足且联网搜索未开启。")
-        return RoutingAssessment(decision, signal)
-
-    def confidence(self, hits: Sequence[SearchHit]) -> float:
-        """Return the bounded confidence feature used by the routing policy."""
-
-        return self.signal(hits).confidence
-
-    def signal(self, hits: Sequence[SearchHit]) -> RoutingSignal:
-        """Expose bounded components for evaluation without leaking document text."""
-
-        if not hits:
-            return RoutingSignal.empty()
-        top_score = max(0.0, min(1.0, hits[0].score))
-        second_score = max(0.0, min(1.0, hits[1].score)) if len(hits) > 1 else 0.0
-        margin = max(0.0, top_score - second_score)
-        ranker_agreement = {"dense", "sparse"}.issubset(hits[0].reasons)
-        lexical_score = max(0.0, min(1.0, hits[0].lexical_score or 0.0))
-        lexical_support = min(
-            1.0,
-            lexical_score / self.settings.routing_lexical_saturation,
-        )
-        supported_agreement = float(ranker_agreement) * lexical_support
-        confidence = min(
-            1.0,
-            0.75 * top_score
-            + 0.15 * supported_agreement
-            + 0.10 * min(1.0, margin * 4),
-        )
-        return RoutingSignal(
-            top_score=top_score,
-            second_score=second_score,
-            margin=margin,
-            ranker_agreement=ranker_agreement,
-            lexical_score=lexical_score,
-            lexical_support=lexical_support,
-            confidence=float(confidence),
-        )

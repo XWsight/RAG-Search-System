@@ -10,7 +10,7 @@
 | --- | --- | --- | --- | --- |
 | 指标夹具 | [`evals/sample_dataset.jsonl`](../evals/sample_dataset.jsonl) | 预先写入的 `retrieved_ids`、`predicted_route`、`answer` 和引用 | JSONL 严格校验、指标公式、引用 ID 审计和报告渲染工作正常 | 当前检索器、Embedding、路由或模型回答的质量 |
 | BM25 smoke baseline | [`evals/retrieval_cases.jsonl`](../evals/retrieval_cases.jsonl) + 4 个 corpus 文档 | 真实 DocumentIngestor 切分、依赖无关的 BM25 检索和当前 RoutingPolicy | 小型开发语料上的确定性回归基线 | 混合检索、真实业务、生成质量、规模/并发表现 |
-| 200-case retrieval suite | [`evals/retrieval_suite.json`](../evals/retrieval_suite.json) + 10 篇来源 | 50 个语义家族的改写鲁棒性、来源隔离 split、困难度、路由与完整 BM25 回归 | 更广覆盖下的确定性检索下限和逐题失败资产 | 200 个独立事实、真实客户分布、混合检索或生产 SLA |
+| 216-case retrieval suite | [`evals/retrieval_suite.json`](../evals/retrieval_suite.json) + 10 篇来源 | 54 个语义家族的改写鲁棒性、通用负例、来源隔离 split、困难度、路由与完整 BM25 回归 | 更广覆盖下的确定性检索下限和逐题失败资产 | 216 个独立事实、真实客户分布、混合检索或生产 SLA |
 | 真实本地检索基准 | 同一 ground truth + 当前 Chroma/HuggingFace/BM25/RRF/可选 reranker | 实际本地检索结果和路由 | 指定模型与配置在该数据集上的检索/路由结果 | 云生成事实性、真实流量泛化或生产 SLA |
 
 `retrieval_cases.jsonl` 是严格 ground truth，只允许问题、相关来源、期望路由和 `allow_web`；loader 会拒绝混入预测字段。这样可避免把手写预测误当作系统输出。
@@ -83,16 +83,16 @@ python scripts/benchmark_sparse.py evals/retrieval_cases.jsonl `
 
 基准命令默认不读取项目 `.env`，避免 API Key 或本地运行参数无意间污染可复现结果。如确实要复现某个部署配置，显式添加 `--dotenv path/to/evaluation.env`，并在报告旁记录该配置的脱敏摘要。
 
-## 3. 200-case retrieval foundation suite
+## 3. 216-case retrieval foundation suite
 
-[`evals/retrieval_suite.json`](../evals/retrieval_suite.json) 不是把 18 条题目机械复制。它包含 50 个语义家族，每个家族有 4 种人工编写问法，共 200 个 case；10 篇来源只属于 development、validation 或 test 中的一个分段，loader 会拒绝同一来源跨分段出现。覆盖矩阵为：
+[`evals/retrieval_suite.json`](../evals/retrieval_suite.json) 不是把 18 条题目机械复制。它包含 54 个语义家族，每个家族有 4 种人工编写问法，共 216 个 case；10 篇来源只属于 development、validation 或 test 中的一个分段，loader 会拒绝同一来源跨分段出现。新增 16 题覆盖普通世界知识、无关理工/生活问题和不支持的外部动作，只进入 development/validation，没有改写首次冻结的 test。覆盖矩阵为：
 
 | 维度 | 分布 |
 | --- | --- |
-| split | development 80 / validation 60 / test 60 |
-| route | local 160 / refused 20 / web 20 |
-| difficulty | easy 56 / medium 84 / hard 60 |
-| semantics | 50 families / 12 categories / 10 source documents |
+| split | development 88 / validation 68 / test 60 |
+| route | local 160 / refused 36 / web 20 |
+| difficulty | easy 64 / medium 92 / hard 60 |
+| semantics | 54 families / 12 categories / 10 source documents |
 
 先验证数据契约，再运行全语料基线：
 
@@ -109,22 +109,22 @@ python scripts/benchmark_sparse.py evals/retrieval_suite.json `
   --markdown-output reports/bm25-foundation.md
 ```
 
-manifest 使用严格 JSON、精确字段和显式最低覆盖要求。校验会拒绝：重复 family/case、忽略空白和标点后相同的问题、错误的 `allow_web`/route/relevance 组合、不存在或逃逸 corpus 根的路径、符号链接来源、来源跨 split 泄漏，以及低于声明的题量、家族、类别、route、difficulty 或 split 覆盖。独立冻结契约还绑定规范化 manifest、全部 corpus 正文 SHA-256 和精确覆盖矩阵；当前 bundle 摘要为 `128a3bedb786c8b4`，因此只改语料正文也会让 CI 失败。
+manifest 使用严格 JSON、精确字段和显式最低覆盖要求。校验会拒绝：重复 family/case、忽略空白和标点后相同的问题、错误的 `allow_web`/route/relevance 组合、不存在或逃逸 corpus 根的路径、符号链接来源、来源跨 split 泄漏，以及低于声明的题量、家族、类别、route、difficulty 或 split 覆盖。独立冻结契约还绑定规范化 manifest、全部 corpus 正文 SHA-256 和精确覆盖矩阵；当前 bundle 摘要为 `e75fb276b6a2a227`，因此只改语料正文也会让 CI 失败。
 
-2026-08-11、摘要 `5dba420a8979a05d` 的 10 文档全语料 BM25 运行结果为：
+2026-08-11、摘要 `2f40b11e574096d0` 的 10 文档全语料 BM25 运行结果为：
 
 | 指标 | 结果 |
 | --- | ---: |
 | Recall@5 | 0.984375000000 |
 | MRR@5 | 0.956770833333 |
 | nDCG@5 | 0.959200740890 |
-| 路由准确率 | 0.800000000000 |
+| 路由准确率 | 0.944444444444 |
 
-160 个本地问题中有 4 个未完整召回，主要来自跨来源问题和更大语料中的干扰项；40 个无本地答案的问题全部暴露了当前 BM25 置信度路由容易选择本地的弱点。冻结门禁锁住这个下限是为了防止继续退化，`0.8` **不是目标路由质量**。后续 Hybrid、阈值和拒答优化必须在 validation 上提高结果，并在冻结 test 上复核，不能通过删除困难题或降低门槛制造提升。
+160 个本地问题中有 4 个未完整召回，主要来自跨来源问题和更大语料中的干扰项；查询能力意图层把实时、外部动作和受限请求从证据阈值中分离后，BM25 的路由达到 `0.9444`，仍有 12 个普通无关问题被稀疏分数误判为本地可回答。冻结门禁锁住这个下限是为了防止继续退化，不能把它描述为 Hybrid 或生产质量。
 
-可用 `--split development|validation|test` 单独运行来源隔离分段。分段只索引该 split 的文档，因此适合开发和误差分析；全套运行同时加入其余文档作为干扰项，结果不能与分段数字直接混为一谈。200 个 case 中包含同一家族的语义改写，汇报时必须同时写明“200 questions / 50 semantic families”，不得宣称 200 个独立事实。
+可用 `--split development|validation|test` 单独运行来源隔离分段。分段只索引该 split 的文档，因此适合开发和误差分析；全套运行同时加入其余文档作为干扰项，结果不能与分段数字直接混为一谈。216 个 case 中包含同一家族的语义改写，汇报时必须同时写明“216 questions / 54 semantic families”，不得宣称 216 个独立事实。
 
-当输入是 governed suite 时，BM25 与 Hybrid 两个 runner 都会生成同一份诊断契约：总体结果、路由混淆矩阵，以及 split、category、difficulty、expected route 四类切片。逐题预测同时记录首名/次名分数、分差、dense/sparse 一致性、词法原始分数/饱和支撑度和最终置信度；这些字段不包含问题或文档正文，可用于聚合和失败定位。报告 schema `3` 是增加字段后的版本，读取方不得假设未知字段不存在。
+当输入是 governed suite 时，BM25 与 Hybrid 两个 runner 都会生成同一份诊断契约：总体结果、路由混淆矩阵，以及 split、category、difficulty、expected route 四类切片。逐题预测同时记录查询意图/规则 ID、首名/次名分数、分差、dense/sparse 一致性、词法原始分数/饱和支撑度和最终置信度；这些字段不包含问题或文档正文，可用于聚合和失败定位。报告 schema `4` 是增加字段后的版本，读取方不得假设未知字段不存在。
 
 ## 4. 真实 hybrid benchmark
 
@@ -152,9 +152,9 @@ python scripts/benchmark_retrieval.py evals/retrieval_cases.jsonl `
 
 当前 18 题 Hybrid 开发基线的 Recall@5、MRR@5、nDCG@5 和路由准确率均为 `1.0`，并由 [`hybrid-development.json`](../evals/gates/hybrid-development.json) 冻结。它需要实际加载 Embedding 模型，是发布前手动门禁；默认 CI 只运行不依赖模型下载的 BM25 门禁。该结果来自本地 `BAAI/bge-small-zh-v1.5`、当前依赖与默认配置，不代表独立 blind test、生成质量或生产 SLA。不得引用 BM25 数字作为 Hybrid 成绩，也不得把这 18 题的满分外推为真实业务准确率。
 
-同一环境首次运行 200 题全语料 Hybrid 得到 Recall@5 `0.984375`、MRR@5 `0.953646`、nDCG@5 `0.953695`、路由准确率 `0.885000`，由 [`hybrid-foundation.json`](../evals/gates/hybrid-foundation.json) 冻结为手动下限。它比 BM25 的路由准确率高，但排序指标略低，说明稠密候选和 RRF 当前并非全面增益。后续只能用 development 开发、validation 选参数，再在冻结 test 上做最终复核；不能根据全套逐题结果反复改写 test。
+同一环境运行 216 题全语料 Hybrid 得到 Recall@5 `0.984375`、MRR@5 `0.953646`、nDCG@5 `0.953695`、路由准确率 `0.990741`，由 [`hybrid-foundation.json`](../evals/gates/hybrid-foundation.json) 冻结为手动下限。查询能力意图先处理实时、未授权动作和受限请求，只有普通知识问题进入 `0.59` 证据阈值；排序指标仍说明稠密候选和 RRF 并非全面增益。
 
-同一默认模型和配置的来源隔离运行中，development/validation 的 Recall@5 都为 `1.0`，路由准确率分别为 `0.925`/`0.95`。9 个路由失败均已召回正确来源，但其置信度与无答案样例重叠。仅降低阈值会削弱误答保护，因此本轮保留生产决策；下一步先扩充通用 hard negatives，再只用 development/validation 比较重排器或新的校准特征，冻结后才运行 test。
+同一默认模型和配置的来源隔离运行中，development 88 题和 validation 68 题的 Recall@5、路由准确率均为 `1.0`。配置冻结后的首次 test 得到 Recall@5 `1.0`、MRR `0.989583`、nDCG `0.992311`、路由 `0.916667`，其中医疗诊断和密钥提取请求暴露能力边界缺失。修复后该公开 test 已被消费，只能作为回归集；后续可信泛化结论需要新的、未参与开发且最好由独立标注者维护的外部盲测集。
 
 ## 路由阈值校准
 
@@ -169,7 +169,7 @@ python scripts/calibrate_threshold.py `
   --output reports/threshold.md
 ```
 
-校准器枚举相邻置信度的中点，先最小化 `2 × FP + 1 × FN` 的平均加权错误，再依次偏好更高 F1、更高 precision 和离最近样例更远的稳定间隔。这里 FP 表示本地证据不足却选择本地回答，默认代价更高。当前开发集推荐阈值为 `0.655070`，最近样例距离为 `0.056669`；这个数字仍需在更大且独立的 validation 集上复核。
+校准器枚举相邻置信度的中点，先最小化 `2 × FP + 1 × FN` 的平均加权错误，再依次偏好更高 F1、更高 precision 和离最近样例更远的稳定间隔。这里 FP 表示本地证据不足却选择本地回答，默认代价更高。查询能力意图分层并加入普通 hard negatives 后，本地证据阈值冻结为 `0.59`；它只适用于当前 Embedding、融合公式和语料分布，不是跨项目常数。
 
 不要在同一小集合上选阈值后又把该集合的最优结果当作无偏测试成绩。正确流程是：
 

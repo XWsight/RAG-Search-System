@@ -25,7 +25,7 @@
 - Prometheus 指标、隐私安全事件日志、健康检查、Docker Compose 和运维手册。
 - 检索评测、路由阈值校准、故障注入测试、Python 3.11/3.12 CI 和依赖审计。
 - 检索评测新增逐题失败诊断、首个相关排名、P50/P95/P99 延迟，以及绑定数据集摘要和 top-k 的冻结质量门禁；BM25 回归现在会直接阻止 CI。
-- 新增严格的 200-question/50-family 检索套件：10 篇来源按 development/validation/test 隔离，覆盖本地、拒答、联网、难度和 12 类主题；自动拒绝重复问题、来源泄漏、危险路径、错误路由标签与覆盖不足，并在 CI 冻结完整 BM25 下限。
+- 新增严格的 216-question/54-family 检索套件：10 篇来源按 development/validation/test 隔离，覆盖本地、拒答、联网、普通无关问题、不支持动作、难度和 12 类主题；自动拒绝重复问题、来源泄漏、危险路径、错误路由标签与覆盖不足，并在 CI 冻结完整 BM25 下限。
 - 新增严格的 50-case/70-fact 结构化回答套件：冻结证据、原子事实、引用、拒答、split、难度、类别与风险标签覆盖；默认 CI 校验完整契约，真实云端评测可按 development/validation/test 手动运行。
 - 结构化回答基准新增 split、类别、难度和风险标签质量切片，逐片报告 case/fact/claim 数、严格通过数、五项指标和失败 case ID；无适用事实的拒答切片明确显示 `N/A`。
 - 检索基准新增统一的路由混淆矩阵与 split、类别、难度、期望路由质量切片；逐题输出不含正文的首名/次名分数、分差、ranker agreement、词法支撑度和置信度，支持在不泄漏问题或文档内容的前提下诊断阈值。
@@ -36,6 +36,7 @@
 ### Changed
 
 - 检索与回答评测套件统一使用共享的严格 JSON、规范化去重、内容摘要和冻结契约基础，避免两套治理逻辑继续分叉。
+- 将查询能力意图从检索器中拆到独立路由层：实时信息、未授权外部动作和受限请求先执行可审计的失败关闭策略，普通知识问题再应用 `0.59` 的证据阈值；216 题全语料 Hybrid 路由基线提升到 `0.9907`。
 
 - Refactored platform workflows onto explicit repository, document-store, job-executor, index-lifecycle, and knowledge-service ports. Production readiness now composes fail-closed probes for catalog, document, job, and vector storage; the 28-module architecture spine is protected by strict mypy and dependency-direction gates.
 

@@ -1,26 +1,26 @@
 {
   "schema_version": 1,
   "suite_id": "retrieval_foundation_v1",
-  "description": "面向工程化 RAG 的来源隔离检索基准；200 个问题由 50 个独立语义家族展开，覆盖本地检索、拒答和联网路由。",
+  "description": "面向工程化 RAG 的来源隔离检索基准；216 个问题由 54 个独立语义家族展开，覆盖本地检索、拒答和联网路由。",
   "corpus_root": "corpus/benchmark",
   "requirements": {
-    "minimum_cases": 200,
-    "minimum_families": 50,
+    "minimum_cases": 216,
+    "minimum_families": 54,
     "minimum_categories": 12,
     "minimum_cases_per_split": {
-      "development": 80,
-      "validation": 60,
+      "development": 88,
+      "validation": 68,
       "test": 60
     },
     "minimum_cases_per_route": {
       "local": 160,
-      "refused": 20,
+      "refused": 36,
       "web": 20
     },
     "minimum_cases_per_difficulty": {
-      "easy": 40,
-      "medium": 80,
-      "hard": 40
+      "easy": 64,
+      "medium": 92,
+      "hard": 60
     }
   },
   "families": [
@@ -625,6 +625,36 @@
       ]
     },
     {
+      "family_id": "generic_world_knowledge",
+      "category": "refused_boundary",
+      "split": "development",
+      "difficulty": "easy",
+      "expected_route": "refused",
+      "allow_web": false,
+      "relevance": {},
+      "questions": [
+        "太阳系中体积最大的行星是哪一颗？",
+        "《红楼梦》的作者通常被认为是谁？",
+        "光在真空中的速度大约是多少？",
+        "法国的首都叫什么名字？"
+      ]
+    },
+    {
+      "family_id": "unsupported_external_actions",
+      "category": "refused_boundary",
+      "split": "development",
+      "difficulty": "medium",
+      "expected_route": "refused",
+      "allow_web": false,
+      "relevance": {},
+      "questions": [
+        "替我给导师发送一封请假邮件。",
+        "帮我预订明天去北京的机票。",
+        "从我的银行卡向朋友转账一百元。",
+        "删除我网盘里上个月上传的所有文件。"
+      ]
+    },
+    {
       "family_id": "private_account_data",
       "category": "refused_boundary",
       "split": "development",
@@ -682,6 +712,36 @@
         "请搜索北京当前空气质量。",
         "允许使用网络，看看上海今晚是否有雨。",
         "从实时来源查询广州未来三天温度。"
+      ]
+    },
+    {
+      "family_id": "unrelated_stem_questions",
+      "category": "refused_boundary",
+      "split": "validation",
+      "difficulty": "easy",
+      "expected_route": "refused",
+      "allow_web": false,
+      "relevance": {},
+      "questions": [
+        "水分子的化学式是什么？",
+        "一元二次方程的求根公式怎么写？",
+        "地球表面的重力加速度大约是多少？",
+        "三角形内角和是多少度？"
+      ]
+    },
+    {
+      "family_id": "unrelated_daily_howto",
+      "category": "refused_boundary",
+      "split": "validation",
+      "difficulty": "medium",
+      "expected_route": "refused",
+      "allow_web": false,
+      "relevance": {},
+      "questions": [
+        "普通电饭锅煮米饭应该放多少水？",
+        "自行车链条脱落后怎样重新装回去？",
+        "阳台种植薄荷需要多久浇一次水？",
+        "初学者每天应该怎样安排钢琴练习？"
       ]
     },
     {
