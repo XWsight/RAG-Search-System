@@ -73,7 +73,7 @@ RAG_DATA_VOLUME=rag-studio-data-restore docker compose up -d
 curl --fail http://127.0.0.1:8000/health/ready
 ```
 
-恢复后用只读请求核对租户边界、知识库数量和抽样检索，再允许写入。启动先把 `jobs.sqlite3` 中未终态的旧执行快照标为 `FAILED`/`worker_restarted`；随后对已知租户重新提交 `PENDING`/`INDEXING`，并把 Catalog 中的 `CANCELLING` 收敛为 `FAILED`/`index_cancelled`。旧 job ID 在归档保留期内仍可查询，但旧 worker 不会恢复执行。确认恢复有效之前，保留原卷不动。归档只能来自可信来源；不要解压未经验证的外部归档。
+恢复后用只读请求核对租户边界、知识库数量和抽样检索，再允许写入。启动先把 `jobs.sqlite3` 中未终态的旧执行快照标为 `FAILED`/`worker_restarted`；随后核验 `PREPARING` 的不可变清单与文件集，完整则继续、部分则回滚，再对已知租户重新提交 `PENDING`/`INDEXING`，并把 Catalog 中的 `CANCELLING` 收敛为 `FAILED`/`index_cancelled`。旧 job ID 在归档保留期内仍可查询，但旧 worker 不会恢复执行。确认恢复有效之前，保留原卷不动。归档只能来自可信来源；不要解压未经验证的外部归档。
 
 PowerShell 中可用 `Get-FileHash -Algorithm SHA256 <文件>` 校验，并用 `$env:RAG_DATA_VOLUME='rag-studio-data-restore'` 设置本次 Compose 进程的卷名。
 
@@ -89,7 +89,7 @@ PowerShell 中可用 `Get-FileHash -Algorithm SHA256 <文件>` 校验，并用 `
 
 如果新版本仅有代码故障且没有改变持久化格式，可以停止服务并切回旧镜像。如果已经执行不可逆的数据迁移，旧程序不能直接读取新数据：必须停止服务，将旧镜像与升级前的新卷快照配对恢复。回滚决策和兼容矩阵应随每个发行版本记录。
 
-当前版本把 Catalog 升级到 schema v3。全新空存储会直接初始化为 v3；首次打开已有 schema v2 时，应用会在单个 SQLite 事务中重建目录表并写入 `user_version=3`，以支持耐久 `CANCELLING`。未知版本以及带旧表的未版本化数据库会被拒绝。该迁移对旧程序不向后兼容：升级前必须完成停写全卷快照，回滚时必须同时恢复旧镜像和升级前快照，不能只切回旧镜像，也不要手工修改 `PRAGMA user_version`。
+当前版本把 Catalog 升级到 schema v4。全新空存储会直接初始化为 v4；首次打开已有 schema v2/v3 时，应用会在单个 SQLite 事务中重建目录表并写入 `user_version=4`，以支持显式 `PREPARING` 和不可变清单提交。未知版本以及带旧表的未版本化数据库会被拒绝。该迁移对旧程序不向后兼容：升级前必须完成停写全卷快照，回滚时必须同时恢复旧镜像和升级前快照，不能只切回旧镜像，也不要手工修改 `PRAGMA user_version`。
 
 不要用两个版本同时连接同一个卷进行“蓝绿”测试；这仍是并发写入同一 SQLite/Chroma 数据集。
 

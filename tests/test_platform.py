@@ -24,7 +24,7 @@ from rag_system.domain import (
     Route,
     RouteDecision,
 )
-from rag_system.file_store import TenantFileStore
+from rag_system.file_store import FileStoreIOError, TenantFileStore
 from rag_system.ingestion import IngestionResult
 from rag_system.idempotency import IdempotencyStore
 from rag_system.idempotency import IdempotencyConflictError
@@ -32,6 +32,7 @@ from rag_system.jobs import JobManager, JobNotFoundError, JobStatus
 from rag_system.job_contracts import JobId, JobSnapshot
 from rag_system.job_store import SqliteJobSnapshotStore
 from rag_system.platform import (
+    IdempotencyInProgressError,
     KnowledgeBaseNotReadyError,
     PlatformIntegrityError,
     PlatformUnavailableError,
@@ -165,6 +166,127 @@ class PlatformTests(unittest.TestCase):
                 return snapshot
             time.sleep(0.01)
         self.fail("background job did not complete")
+
+    def _stage_preparing(self, *, key: str, documents: tuple[UploadDocument, ...]):
+        uploads = self.platform._uploads.prepare(documents)
+        reservation = self.platform.idempotency.reserve(
+            self.tenant_a,
+            "knowledge_base.create",
+            key,
+            self.platform._uploads.request_digest("Interrupted upload", uploads),
+        )
+        record = self.platform.catalog.create(
+            self.tenant_a,
+            "Interrupted upload",
+            idempotency_reservation_id=reservation.reservation_id,
+        )
+        planned = self.platform._assets.plan(
+            self.tenant_a,
+            uploads,
+            new_document_id=self.platform._uploads.new_document_id,
+        )
+        record = self.platform.catalog.attach_manifest(
+            self.tenant_a,
+            record.resource_id,
+            tuple(item.manifest for item in planned),
+        )
+        return record, planned
+
+    def test_recovery_promotes_a_fully_stored_preparing_upload(self) -> None:
+        documents = (UploadDocument("complete.txt", b"complete evidence"),)
+        record, planned = self._stage_preparing(
+            key="complete-preparing",
+            documents=documents,
+        )
+        self.platform._assets.store(self.tenant_a, planned)
+
+        self.assertEqual(self.platform.recover_incomplete((self.tenant_a,)), 1)
+        replay = self.platform.create_knowledge_base(
+            self.tenant_a,
+            display_name="Interrupted upload",
+            documents=documents,
+            idempotency_key="complete-preparing",
+        )
+
+        self.assertTrue(replay.replayed)
+        self.assertEqual(replay.knowledge_base.resource_id, record.resource_id)
+        self.assertEqual(
+            self._wait_for_job(replay.job_id.value).status,
+            JobStatus.SUCCEEDED,
+        )
+        self.assertEqual(
+            self.platform.get_knowledge_base(self.tenant_a, record.resource_id).status,
+            KnowledgeBaseStatus.READY,
+        )
+
+    def test_recovery_rolls_back_a_partial_preparing_upload_for_clean_retry(self) -> None:
+        documents = (
+            UploadDocument("first.txt", b"first evidence"),
+            UploadDocument("second.txt", b"second evidence"),
+        )
+        record, planned = self._stage_preparing(
+            key="partial-preparing",
+            documents=documents,
+        )
+        self.platform._assets.store(self.tenant_a, planned[:1])
+
+        self.assertEqual(self.platform.recover_incomplete((self.tenant_a,)), 1)
+        with self.assertRaises(KnowledgeBaseUnavailableError):
+            self.platform.get_knowledge_base(self.tenant_a, record.resource_id)
+
+        retried = self.platform.create_knowledge_base(
+            self.tenant_a,
+            display_name="Interrupted upload",
+            documents=documents,
+            idempotency_key="partial-preparing",
+        )
+        self.assertFalse(retried.replayed)
+        self.assertEqual(
+            self._wait_for_job(retried.job_id.value).status,
+            JobStatus.SUCCEEDED,
+        )
+
+    def test_failed_preparing_cleanup_keeps_idempotency_until_retry_converges(self) -> None:
+        documents = (
+            UploadDocument("first.txt", b"first evidence"),
+            UploadDocument("second.txt", b"second evidence"),
+        )
+        record, planned = self._stage_preparing(
+            key="cleanup-preparing",
+            documents=documents,
+        )
+        self.platform._assets.store(self.tenant_a, planned[:1])
+
+        with patch.object(
+            self.platform.file_store,
+            "delete",
+            side_effect=FileStoreIOError("transient failure"),
+        ):
+            self.assertEqual(self.platform.recover_incomplete((self.tenant_a,)), 1)
+        self.assertEqual(
+            self.platform.get_knowledge_base(self.tenant_a, record.resource_id).status,
+            KnowledgeBaseStatus.DELETING,
+        )
+        with self.assertRaises(IdempotencyInProgressError):
+            self.platform.create_knowledge_base(
+                self.tenant_a,
+                display_name="Interrupted upload",
+                documents=documents,
+                idempotency_key="cleanup-preparing",
+            )
+
+        self.assertEqual(self.platform.recover_incomplete((self.tenant_a,)), 1)
+        retried = self.platform.create_knowledge_base(
+            self.tenant_a,
+            display_name="Interrupted upload",
+            documents=documents,
+            idempotency_key="cleanup-preparing",
+        )
+        self.assertFalse(retried.replayed)
+        self.assertEqual(
+            self._wait_for_job(retried.job_id.value).status,
+            JobStatus.SUCCEEDED,
+        )
 
     def test_create_answer_session_isolation_and_delete(self) -> None:
         record = self._create_ready()

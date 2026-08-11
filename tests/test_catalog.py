@@ -45,9 +45,29 @@ class CatalogTests(unittest.TestCase):
         self.tenant_a = make_principal("tenant-a")
         self.tenant_b = make_principal("tenant-b")
 
+    def create_pending(
+        self,
+        principal: Principal,
+        display_name: str,
+        documents: tuple[DocumentManifest, ...] | list[DocumentManifest] | None = None,
+    ):
+        manifest = [make_document()] if documents is None else documents
+        record = self.catalog.create(principal, display_name)
+        record = self.catalog.attach_manifest(principal, record.resource_id, manifest)
+        return self.catalog.transition(
+            principal,
+            record.resource_id,
+            KnowledgeBaseStatus.PENDING,
+        )
+
     def test_restart_recovers_record_and_manifest(self) -> None:
         document = make_document()
-        created = self.catalog.create(self.tenant_a, "技术资料", [document])
+        created = self.catalog.create(self.tenant_a, "技术资料")
+        created = self.catalog.attach_manifest(
+            self.tenant_a,
+            created.resource_id,
+            [document],
+        )
         reopened = KnowledgeBaseCatalog(self.database)
         restored = reopened.get(self.tenant_a, created.resource_id)
 
@@ -58,9 +78,46 @@ class CatalogTests(unittest.TestCase):
         self.assertNotIn("tenant-a", restored.resource_id)
         self.assertNotIn("技术资料", restored.resource_id)
 
+    def test_preparing_requires_one_immutable_manifest_before_pending(self) -> None:
+        created = self.catalog.create(self.tenant_a, "准备中")
+        self.assertEqual(created.status, KnowledgeBaseStatus.PREPARING)
+        self.assertEqual(created.documents, ())
+        with self.assertRaises(CatalogValidationError):
+            self.catalog.transition(
+                self.tenant_a,
+                created.resource_id,
+                KnowledgeBaseStatus.PENDING,
+            )
+
+        document = make_document()
+        attached = self.catalog.attach_manifest(
+            self.tenant_a,
+            created.resource_id,
+            [document],
+        )
+        replayed = self.catalog.attach_manifest(
+            self.tenant_a,
+            created.resource_id,
+            [document],
+        )
+        self.assertEqual(replayed, attached)
+        with self.assertRaises(CatalogValidationError):
+            self.catalog.attach_manifest(
+                self.tenant_a,
+                created.resource_id,
+                [make_document("different.txt")],
+            )
+
+        pending = self.catalog.transition(
+            self.tenant_a,
+            created.resource_id,
+            KnowledgeBaseStatus.PENDING,
+        )
+        self.assertEqual(pending.status, KnowledgeBaseStatus.PENDING)
+
     def test_valid_state_machine_and_delete_returns_manifest(self) -> None:
         document = make_document()
-        record = self.catalog.create(self.tenant_a, "资料", [document])
+        record = self.create_pending(self.tenant_a, "资料", [document])
         record = self.catalog.transition(
             self.tenant_a,
             record.resource_id,
@@ -100,7 +157,7 @@ class CatalogTests(unittest.TestCase):
             self.catalog.get(self.tenant_a, record.resource_id)
 
     def test_illegal_transitions_are_rejected_without_mutation(self) -> None:
-        record = self.catalog.create(self.tenant_a, "资料", [make_document()])
+        record = self.create_pending(self.tenant_a, "资料")
         with self.assertRaises(InvalidStatusTransitionError):
             self.catalog.transition(
                 self.tenant_a,
@@ -117,7 +174,7 @@ class CatalogTests(unittest.TestCase):
             self.catalog.delete(self.tenant_a, record.resource_id)
 
     def test_pending_ingestion_can_fail_with_a_safe_code(self) -> None:
-        record = self.catalog.create(self.tenant_a, "invalid upload", [make_document()])
+        record = self.create_pending(self.tenant_a, "invalid upload")
         failed = self.catalog.transition(
             self.tenant_a,
             record.resource_id,
@@ -128,7 +185,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(failed.error_code, KnowledgeBaseErrorCode.CONTENT_REJECTED)
 
     def test_cancellation_intent_is_durable_and_only_converges_to_failure(self) -> None:
-        record = self.catalog.create(self.tenant_a, "cancelled upload", [make_document()])
+        record = self.create_pending(self.tenant_a, "cancelled upload")
         cancelling = self.catalog.transition(
             self.tenant_a,
             record.resource_id,
@@ -158,7 +215,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(failed.error_code, KnowledgeBaseErrorCode.INDEX_CANCELLED)
 
     def test_cross_tenant_and_missing_have_identical_errors(self) -> None:
-        own = self.catalog.create(self.tenant_a, "私有资料", [make_document()])
+        own = self.create_pending(self.tenant_a, "私有资料")
         messages: list[str] = []
         for resource_id in (own.resource_id, "kb_" + "x" * 32, "invalid"):
             with self.assertRaises(KnowledgeBaseUnavailableError) as raised:
@@ -212,7 +269,12 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaises(CatalogValidationError):
             DocumentManifest("file.txt", "documents/file.txt", 1, digest.upper())
 
-        record = self.catalog.create(self.tenant_a, "资料", [make_document()])
+        record = self.catalog.create(self.tenant_a, "资料")
+        record = self.catalog.attach_manifest(
+            self.tenant_a,
+            record.resource_id,
+            [make_document()],
+        )
         with closing(sqlite3.connect(self.database)) as connection:
             connection.execute(
                 "UPDATE knowledge_bases SET manifest_json = ? WHERE resource_id = ?",
@@ -225,7 +287,7 @@ class CatalogTests(unittest.TestCase):
     def test_schema_version_wal_and_foreign_keys(self) -> None:
         with closing(sqlite3.connect(self.database)) as connection:
             self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0].lower(), "wal")
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
         connection = self.catalog._connect()
         try:
             self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
@@ -239,16 +301,54 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaises(CatalogSchemaError):
             KnowledgeBaseCatalog(incompatible)
 
-    def test_schema_v2_is_migrated_without_losing_records(self) -> None:
-        record = self.catalog.create(self.tenant_a, "migration record", [make_document()])
-        with closing(sqlite3.connect(self.database)) as connection:
-            connection.execute("PRAGMA user_version = 2")
+    def test_schema_v2_and_v3_are_migrated_without_losing_records(self) -> None:
+        for source_version in (2, 3):
+            with self.subTest(source_version=source_version):
+                database = Path(
+                    self.directory.name,
+                    f"catalog-v{source_version}.sqlite3",
+                )
+                catalog = KnowledgeBaseCatalog(database)
+                record = catalog.create(self.tenant_a, "migration record")
+                record = catalog.attach_manifest(
+                    self.tenant_a,
+                    record.resource_id,
+                    [make_document()],
+                )
+                record = catalog.transition(
+                    self.tenant_a,
+                    record.resource_id,
+                    KnowledgeBaseStatus.PENDING,
+                )
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute(f"PRAGMA user_version = {source_version}")
+                    connection.commit()
+
+                migrated = KnowledgeBaseCatalog(database)
+                self.assertEqual(migrated.get(self.tenant_a, record.resource_id), record)
+                with closing(sqlite3.connect(database)) as connection:
+                    self.assertEqual(
+                        connection.execute("PRAGMA user_version").fetchone()[0],
+                        4,
+                    )
+
+    def test_legacy_empty_pending_record_migrates_to_preparing(self) -> None:
+        database = Path(self.directory.name, "catalog-incomplete-v3.sqlite3")
+        catalog = KnowledgeBaseCatalog(database)
+        record = catalog.create(self.tenant_a, "interrupted legacy upload")
+        with closing(sqlite3.connect(database)) as connection:
+            connection.execute(
+                "UPDATE knowledge_bases SET status = 'pending' WHERE resource_id = ?",
+                (record.resource_id,),
+            )
+            connection.execute("PRAGMA user_version = 3")
             connection.commit()
 
-        migrated = KnowledgeBaseCatalog(self.database)
-        self.assertEqual(migrated.get(self.tenant_a, record.resource_id), record)
-        with closing(sqlite3.connect(self.database)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+        migrated = KnowledgeBaseCatalog(database)
+        self.assertEqual(
+            migrated.get(self.tenant_a, record.resource_id).status,
+            KnowledgeBaseStatus.PREPARING,
+        )
 
     def test_connection_is_closed_when_pragma_initialization_fails(self) -> None:
         connection = MagicMock()

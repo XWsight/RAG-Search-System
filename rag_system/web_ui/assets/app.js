@@ -122,6 +122,7 @@ function routeLabel(route) {
 
 function statusLabel(status) {
   return {
+    preparing: "准备文档",
     pending: "等待处理",
     indexing: "建立索引",
     ready: "可用",

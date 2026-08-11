@@ -207,12 +207,17 @@ class RagPlatform:
                 uploads,
                 new_document_id=self._uploads.new_document_id,
             )
-            created_record = self.catalog.replace_manifest(
+            created_record = self.catalog.attach_manifest(
                 principal,
                 created_record.resource_id,
                 tuple(item.manifest for item in planned),
             )
             self._assets.store(principal, planned)
+            created_record = self.catalog.transition(
+                principal,
+                created_record.resource_id,
+                KnowledgeBaseStatus.PENDING,
+            )
             job_id = self._submit_indexing(
                 principal,
                 created_record.resource_id,
@@ -225,18 +230,24 @@ class RagPlatform:
                 job_id.value,
             )
         except Exception:
+            cleanup_complete = created_record is None
             if created_record is not None:
                 if job_id is None:
-                    self._rollback_create(principal, created_record)
+                    cleanup_complete = self._rollback_create(
+                        principal,
+                        created_record,
+                    )
                 else:
                     try:
                         self.delete_knowledge_base(principal, created_record.resource_id)
+                        cleanup_complete = True
                     except Exception:
                         pass
-            try:
-                self.idempotency.abandon(principal, reservation.reservation_id)
-            except Exception:
-                pass
+            if cleanup_complete:
+                try:
+                    self.idempotency.abandon(principal, reservation.reservation_id)
+                except Exception:
+                    pass
             raise
         if created_record is None or job_id is None:
             raise PlatformUnavailableError("knowledge base submission did not complete")
@@ -387,6 +398,10 @@ class RagPlatform:
             for record in tenant_records:
                 if record.status is KnowledgeBaseStatus.DELETING:
                     self.delete_knowledge_base(principal, record.resource_id)
+                    self._abandon_reservation_if_unbound(principal, record)
+                    recovered += 1
+                elif record.status is KnowledgeBaseStatus.PREPARING:
+                    self._recover_preparing(principal, record)
                     recovered += 1
                 elif record.status is KnowledgeBaseStatus.CANCELLING:
                     self.catalog.transition(
@@ -501,7 +516,7 @@ class RagPlatform:
         self,
         principal: Principal,
         record: KnowledgeBaseRecord,
-    ) -> None:
+    ) -> bool:
         try:
             current = self.catalog.get(principal, record.resource_id)
             if current.status is not KnowledgeBaseStatus.DELETING:
@@ -511,7 +526,7 @@ class RagPlatform:
                     KnowledgeBaseStatus.DELETING,
                 )
         except Exception:
-            return
+            return False
 
         cleanup_succeeded = True
         for document in current.documents:
@@ -524,7 +539,48 @@ class RagPlatform:
             try:
                 self.catalog.delete(principal, record.resource_id)
             except Exception:
-                return
+                return False
+            return True
+        return False
+
+    def _recover_preparing(
+        self,
+        principal: Principal,
+        record: KnowledgeBaseRecord,
+    ) -> None:
+        """Promote a fully stored upload or roll back an interrupted one."""
+
+        try:
+            self._assets.resolve(principal, record)
+        except (FileStoreError, PlatformIntegrityError):
+            if self._rollback_create(principal, record):
+                self._abandon_reservation_if_unbound(principal, record)
+            return
+
+        pending = self.catalog.transition(
+            principal,
+            record.resource_id,
+            KnowledgeBaseStatus.PENDING,
+        )
+        job_id = self._submit_indexing(
+            principal,
+            pending.resource_id,
+            idempotency_key=f"recovery:{pending.resource_id}:{pending.version}",
+        )
+        self._recover_idempotency_binding(principal, pending, job_id)
+
+    def _abandon_reservation_if_unbound(
+        self,
+        principal: Principal,
+        record: KnowledgeBaseRecord,
+    ) -> None:
+        reservation_id = record.idempotency_reservation_id
+        if reservation_id is None:
+            return
+        try:
+            self.idempotency.abandon(principal, reservation_id)
+        except IdempotencyConflictError:
+            return
 
     @staticmethod
     def _namespace(principal: Principal, resource_id: str) -> str:

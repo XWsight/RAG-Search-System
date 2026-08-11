@@ -8,7 +8,7 @@
 - 默认不把问题或证据发送到云端；调用方必须逐次允许云生成和联网搜索。
 - 建库采用异步任务，问答采用同步请求，并为两条路径设置显式资源上限。
 - 检索、路由、生成和引用是可替换模块，而 HTTP、存储和供应商协议不会侵入领域对象。
-- 单进程重启后可以从原始文档、SQLite 目录和持久化 Chroma 集合恢复知识库；`PENDING`/`INDEXING` 会重新提交，`CANCELLING` 会终态化，旧 worker 不会恢复执行，但有界 job 快照和 ID 会保留为可查询历史。
+- 单进程重启后可以从原始文档、SQLite 目录和持久化 Chroma 集合恢复知识库；`PREPARING` 会核验后继续或回滚，`PENDING`/`INDEXING` 会重新提交，`CANCELLING` 会终态化，旧 worker 不会恢复执行，但有界 job 快照和 ID 会保留为可查询历史。
 
 ## 上下文与信任边界
 
@@ -40,7 +40,7 @@ HTTP 入口不提供 TLS；公网部署必须使用受控反向代理。上传�
 | [`platform.py`](../rag_system/platform.py) | 应用门面：知识库生命周期、幂等创建、任务提交、重启恢复、租户化索引与会话标识的用例编排 | HTTP 协议、文档内容校验细节和索引状态机细节 |
 | [`submission.py`](../rag_system/submission.py)、[`coordination.py`](../rag_system/coordination.py) | 上传的有界物化与稳定摘要、文档 ID 策略、确定性分片锁和一致的双向 resource-job 登记 | 文件持久化、任务执行和 HTTP multipart 解析 |
 | [`assets.py`](../rag_system/assets.py)、[`indexing.py`](../rag_system/indexing.py) | Catalog 清单与文件结果核对、路径/哈希完整性、耐久索引状态迁移、取消收敛和失败补偿 | API 鉴权、问答路由或供应商调用 |
-| [`catalog.py`](../rag_system/catalog.py) | SQLite schema v3 中租户范围的知识库状态机、耐久取消意图与文档清单 | 文档正文、向量或耐久任务执行日志 |
+| [`catalog.py`](../rag_system/catalog.py) | SQLite schema v4 中租户范围的知识库状态机、显式上传准备阶段、耐久取消意图与不可变文档清单 | 文档正文、向量或耐久任务执行日志 |
 | [`idempotency.py`](../rag_system/idempotency.py) | SQLite 中按租户、操作和 key 隔离的创建请求预留与结果绑定 | 任务结果持久化 |
 | [`file_store.py`](../rag_system/file_store.py) | 有界、不可穿越、拒绝链接/重解析点的租户文件保存、解析和精确删除 | 文档格式解析 |
 | [`job_contracts.py`](../rag_system/job_contracts.py)、[`jobs.py`](../rag_system/jobs.py)、[`job_store.py`](../rag_system/job_store.py) | 框架无关任务契约、有界线程池、租户隔离执行、协作取消，以及 SQLite 中有界的状态/结果快照归档 | 跨进程任务分发、恢复旧 Python callable 或分布式公平队列 |
@@ -73,9 +73,10 @@ sequenceDiagram
     A->>A: 认证、writer 角色、限流、逐块大小检查
     A->>P: create_knowledge_base
     P->>I: reserve(tenant, request digest, key)
-    P->>K: 创建 PENDING 记录并关联 reservation
-    P->>K: 先写入预计算的完整文档清单
+    P->>K: 创建 PREPARING 记录并关联 reservation
+    P->>K: 一次性绑定预计算的不可变文档清单
     P->>F: 原子保存文件并核对大小 / SHA-256
+    P->>K: PREPARING -> PENDING
     P->>J: 提交租户化索引任务
     P->>I: 绑定 knowledge_base_id / job_id
     A-->>C: 202 + knowledge_base_id + job_id
@@ -111,19 +112,19 @@ sequenceDiagram
     end
 ```
 
-Catalog 的 `CANCELLING` 与 job 的 `cancelling` 含义不同：前者是 schema v3 中的耐久知识库取消意图，后者是当前进程的执行状态，同时会归档到 job 快照库。正常路径会在发出信号后尽力把知识库立即写成 `FAILED`/`index_cancelled`，但运行中的 worker 在真正退出前仍占用任务容量。如果终态写入失败或进程中断，启动恢复不会重新提交该知识库；同一创建请求的幂等重放也会把残留 `CANCELLING` 收敛为 `FAILED`/`index_cancelled`，并在需要时轮换成新的可轮询 job。
+Catalog 的 `CANCELLING` 与 job 的 `cancelling` 含义不同：前者是 schema v4 中的耐久知识库取消意图，后者是当前进程的执行状态，同时会归档到 job 快照库。正常路径会在发出信号后尽力把知识库立即写成 `FAILED`/`index_cancelled`，但运行中的 worker 在真正退出前仍占用任务容量。如果终态写入失败或进程中断，启动恢复不会重新提交该知识库；同一创建请求的幂等重放也会把残留 `CANCELLING` 收敛为 `FAILED`/`index_cancelled`，并在需要时轮换成新的可轮询 job。
 
 `READY` 是不可被取消覆盖的 durable commit point。取消到达时若 Catalog 已经是 `READY`，平台不会写入知识库 `CANCELLING`；它仍可向尚未返回的进程内 job 发出信号，因此客户端可能短暂看到 job `cancelling`，但提交成功的任务最终为 `succeeded`，知识库继续保持 `READY`。
 
 关键不变量：
 
 1. 创建请求摘要覆盖知识库名称、文件名和文件内容 SHA-256；同一租户和幂等 key 的不同请求会冲突。持久 reservation 的有效窗口为 24 小时，过期后的 key 会被当作新请求。
-2. 完整计划清单先于文件写入持久化；文件再写到临时路径并原子移动。硬崩溃后，所有已写文件仍有 Catalog 清单可达，启动恢复或 `DELETING` 重试能够清理。
+2. `PREPARING` 与 `PENDING` 不再混用：完整计划清单在 `PREPARING` 中一次性绑定，文件写到临时路径并原子移动，全部核验后才提交 `PENDING`。硬崩溃后，完整上传会继续建库，部分上传会通过清单精确回滚；清理失败则保留 `DELETING` 墓碑和原幂等预留，禁止重复创建。
 3. `internal_index_id` 包含租户/知识库命名空间、文档身份、Embedding 模型和切分参数；外部 API 不暴露该标识。
 4. Chroma 集合若恰好包含预期 chunk ID 集合则直接复用；空集合会写入，部分或多余集合会先删除再重建。
 5. 对 `PENDING`/`INDEXING` 的取消必须先耐久提交 Catalog `CANCELLING`，再向 worker 发信号。任务只在显式检查点响应取消，正在执行的第三方库调用不保证立即中断；`READY` 提交后到达的取消不会回滚知识库。
 
-文件系统、SQLite 和 Chroma 之间没有跨资源 ACID 事务。实现通过先写清单、状态机、内容校验、可重试删除和失败补偿降低不一致概率；启动恢复会清理 `DELETING`、把 `CANCELLING` 终态化为 `FAILED`/`index_cancelled`、重新提交 `PENDING`/`INDEXING`，并用持久 reservation 修复资源与新进程任务的绑定。运维仍需监控长期停留状态并使用一致性备份。
+文件系统、SQLite 和 Chroma 之间没有跨资源 ACID 事务。实现通过显式 `PREPARING`、不可变清单、内容校验、可重试删除和失败补偿降低不一致概率；启动恢复会验证并继续完整的 `PREPARING`、精确回滚部分上传、清理 `DELETING`、把 `CANCELLING` 终态化为 `FAILED`/`index_cancelled`、重新提交 `PENDING`/`INDEXING`，并用持久 reservation 修复资源与新进程任务的绑定。运维仍需监控长期停留状态并使用一致性备份。
 
 ## 同步问答数据流
 
@@ -184,7 +185,7 @@ sequenceDiagram
 
 ```text
 <storage-root>/
-├── catalog.sqlite3       # schema v3：知识库状态、耐久取消意图与文档清单
+├── catalog.sqlite3       # schema v4：准备/索引状态、耐久取消与不可变文档清单
 ├── idempotency.sqlite3   # 创建请求预留与结果绑定
 ├── jobs.sqlite3          # 有界、租户隔离的 job 状态与结果快照归档
 ├── .rag-studio.instance  # 单节点进程独占锁文件
@@ -192,11 +193,12 @@ sequenceDiagram
 └── vector/               # Chroma 持久集合
 ```
 
-Catalog 以 SQLite `user_version=3` 标识当前 schema。全新空存储会直接初始化为 v3；已有 schema v2 会在启动时自动、事务化地重建为 v3，以增加 `CANCELLING` 状态约束；未知版本以及带旧表的未版本化数据库会被拒绝。迁移不会把 JobManager 变成耐久队列，旧程序也不能读取 v3，因此升级和回滚必须使用停写后的完整卷快照。
+Catalog 以 SQLite `user_version=4` 标识当前 schema。全新空存储会直接初始化为 v4；已有 schema v2/v3 会在启动时自动、事务化地重建为 v4，以支持显式 `PREPARING`。未知版本以及带旧表的未版本化数据库会被拒绝。迁移不会把 JobManager 变成耐久队列，旧程序也不能读取 v4，因此升级和回滚必须使用停写后的完整卷快照。
 
 | 状态 | 是否持久 | 重启行为 |
 | --- | --- | --- |
 | 原始文档、目录记录、幂等记录、Chroma 集合 | 是 | 从卷读取；索引缓存缺失时按清单校验文档并重开/重建 |
+| `PREPARING` 知识库状态 | 是 | 完整文件集核验通过则晋升并建库；部分文件集精确回滚，失败时保留 `DELETING` |
 | `PENDING`/`INDEXING` 知识库状态 | 是 | 启动时按配置中已知租户重新提交任务 |
 | `CANCELLING` 知识库状态 | 是 | 不重新提交索引；启动时收敛为 `FAILED`，错误码为 `index_cancelled` |
 | job 状态、ID 与有界结果快照 | 是 | 活动快照安全转为 `FAILED`/`worker_restarted`；保留期内旧 ID 仍可查询 |

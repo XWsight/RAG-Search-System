@@ -114,7 +114,7 @@ python -m uvicorn api_app:app --host 127.0.0.1 --port 8000 --workers 1
 
 索引取消采用两层状态：平台会先把可取消知识库的 Catalog 状态从 `PENDING`/`INDEXING` 耐久写为 `CANCELLING`，成功后才向进程内 worker 发出取消信号。意图写入失败时 API 返回 `503`、worker 不会收到信号，调用方应使用同一 job ID 重试。排队 job 可能立即变为 `cancelled`；运行中 job 先变为 `cancelling`，只有 worker 实际退出后才释放任务容量。知识库通常收敛为 `FAILED`/`index_cancelled`；若终态写入中断，启动恢复或同一创建请求的幂等重放会完成收敛。旧 worker 不会恢复执行，但其快照在有界保留期内仍可查询；必要时重放会轮换并绑定一个新的可轮询 job。
 
-如果知识库已经耐久提交为 `READY`，取消请求已经太迟：Catalog 保持 `READY`，job 可能短暂显示 `cancelling`，但已完成的任务最终记为 `succeeded`。Catalog 当前使用 schema v3；启动时会在事务内把 schema v2 迁移到 v3，以容纳耐久 `CANCELLING` 状态。升级前仍须停写备份；旧程序不能直接读取迁移后的 v3 Catalog。
+如果知识库已经耐久提交为 `READY`，取消请求已经太迟：Catalog 保持 `READY`，job 可能短暂显示 `cancelling`，但已完成的任务最终记为 `succeeded`。Catalog 当前使用 schema v4：上传先进入 `PREPARING`，绑定一次性不可变清单，全部文件落盘核验后才进入 `PENDING`。启动时会事务化迁移 schema v2/v3；升级前仍须停写备份，旧程序不能直接读取迁移后的 v4 Catalog。
 
 `ready` 验证文档存储根、Catalog、向量目录、任务执行器和耐久 job 快照库；它不加载可选模型、不执行 Chroma 查询，也不探测外部供应商。调用方仍需处理单次检索、模型下载或上游服务失败。
 
@@ -222,7 +222,7 @@ tests/                # 单元、隔离、并发、故障与 API 契约测试
 - 上传内容、网络摘要和检索片段全部视为不可信数据；系统提示明确禁止执行证据中的指令。
 - API 不回显供应商响应体、内部路径、租户 ID、内部索引 ID、问题正文或文档正文到日志。
 - 网络搜索会发送问题，云端生成会发送问题与选中证据；两条出站路径分别授权。
-- 会话、可执行任务队列和限流状态仍为进程内状态；job 快照/ID 已有租户隔离的 SQLite 有界归档。重启不会继续执行旧 worker，而会把其中断快照安全终态化，再按 Catalog 重新提交 `PENDING`/`INDEXING`，并把耐久 `CANCELLING` 收敛为 `FAILED`/`index_cancelled`。这仍不是分布式任务系统。
+- 会话、可执行任务队列和限流状态仍为进程内状态；job 快照/ID 已有租户隔离的 SQLite 有界归档。重启不会继续执行旧 worker，而会把其中断快照安全终态化，先核验或回滚 `PREPARING`，再按 Catalog 重新提交 `PENDING`/`INDEXING`，并把耐久 `CANCELLING` 收敛为 `FAILED`/`index_cancelled`。这仍不是分布式任务系统。
 - “删除”是应用层逻辑删除与文件删除，不等于 SSD、快照和离线备份的介质级不可恢复擦除。
 
 威胁模型、残余风险和安全报告流程见[安全设计](docs/security.md)与[安全策略](SECURITY.md)。

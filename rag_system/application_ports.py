@@ -25,7 +25,6 @@ class KnowledgeBaseRepository(Protocol):
         self,
         principal: Principal,
         display_name: str,
-        documents: Sequence[DocumentManifest] = (),
         *,
         idempotency_reservation_id: str | None = None,
     ) -> KnowledgeBaseRecord: ...
@@ -46,7 +45,7 @@ class KnowledgeBaseRepository(Protocol):
         offset: int = 0,
     ) -> tuple[KnowledgeBaseRecord, ...]: ...
 
-    def replace_manifest(
+    def attach_manifest(
         self,
         principal: Principal,
         resource_id: str,

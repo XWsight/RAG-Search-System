@@ -19,7 +19,7 @@ from typing import Any, cast
 from .tenancy import Principal, TenantId
 
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 _MAX_LIST_LIMIT = 100
 _MAX_LIST_OFFSET = 10_000
 _MAX_MANIFEST_ITEMS = 10_000
@@ -65,6 +65,7 @@ class InvalidStatusTransitionError(CatalogError):
 
 
 class KnowledgeBaseStatus(StrEnum):
+    PREPARING = "preparing"
     PENDING = "pending"
     INDEXING = "indexing"
     CANCELLING = "cancelling"
@@ -84,6 +85,13 @@ class KnowledgeBaseErrorCode(StrEnum):
 
 
 _ALLOWED_TRANSITIONS: Mapping[KnowledgeBaseStatus, frozenset[KnowledgeBaseStatus]] = {
+    KnowledgeBaseStatus.PREPARING: frozenset(
+        {
+            KnowledgeBaseStatus.PENDING,
+            KnowledgeBaseStatus.FAILED,
+            KnowledgeBaseStatus.DELETING,
+        }
+    ),
     KnowledgeBaseStatus.PENDING: frozenset(
         {
             KnowledgeBaseStatus.INDEXING,
@@ -170,6 +178,29 @@ class KnowledgeBaseRecord:
             raise CatalogValidationError("Stored document counts do not match the manifest.")
         if isinstance(self.chunk_count, bool) or not isinstance(self.chunk_count, int) or self.chunk_count < 0:
             raise CatalogValidationError("chunk_count must be a non-negative integer.")
+        if self.status in {
+            KnowledgeBaseStatus.PENDING,
+            KnowledgeBaseStatus.INDEXING,
+            KnowledgeBaseStatus.CANCELLING,
+            KnowledgeBaseStatus.READY,
+        } and not self.documents:
+            raise CatalogValidationError(
+                "An active knowledge base requires an attached document manifest."
+            )
+        if self.status in {
+            KnowledgeBaseStatus.PREPARING,
+            KnowledgeBaseStatus.PENDING,
+        } and (self.internal_index_id is not None or self.chunk_count != 0):
+            raise CatalogValidationError(
+                "Preparing and pending knowledge bases cannot contain index results."
+            )
+        if (
+            self.status is KnowledgeBaseStatus.INDEXING
+            and self.internal_index_id is None
+        ):
+            raise CatalogValidationError(
+                "An indexing knowledge base requires an internal index ID."
+            )
         if self.status is KnowledgeBaseStatus.READY and self.internal_index_id is None:
             raise CatalogValidationError("A ready knowledge base requires an internal index ID.")
         if self.status is KnowledgeBaseStatus.FAILED:
@@ -230,14 +261,12 @@ class KnowledgeBaseCatalog:
         self,
         principal: Principal,
         display_name: str,
-        documents: Sequence[DocumentManifest] = (),
         *,
         idempotency_reservation_id: str | None = None,
     ) -> KnowledgeBaseRecord:
         tenant_id = _principal_tenant(principal)
         clean_name = _validate_display_name(display_name, 200)
-        manifest = _normalize_manifest(documents)
-        manifest_json = _encode_manifest(manifest)
+        manifest_json = _encode_manifest(())
         created_at = self._now()
         reservation_id = (
             _validate_idempotency_reservation_id(idempotency_reservation_id)
@@ -262,11 +291,11 @@ class KnowledgeBaseCatalog:
                             resource_id,
                             tenant_id.value,
                             clean_name,
-                            KnowledgeBaseStatus.PENDING.value,
+                            KnowledgeBaseStatus.PREPARING.value,
                             None,
                             manifest_json,
-                            len(manifest),
-                            sum(item.size_bytes for item in manifest),
+                            0,
+                            0,
                             0,
                             None,
                             created_at,
@@ -335,7 +364,7 @@ class KnowledgeBaseCatalog:
             ).fetchall()
         return tuple(_record_from_row(row) for row in rows)
 
-    def replace_manifest(
+    def attach_manifest(
         self,
         principal: Principal,
         resource_id: str,
@@ -344,11 +373,22 @@ class KnowledgeBaseCatalog:
         tenant_id = _principal_tenant(principal)
         clean_id = _safe_resource_lookup_id(resource_id)
         manifest = _normalize_manifest(documents)
+        if not manifest:
+            raise CatalogValidationError("Document manifest cannot be empty.")
         manifest_json = _encode_manifest(manifest)
         with self._write_lock, self._write_transaction() as connection:
             current = self._owned_record(connection, tenant_id, clean_id)
-            if current.status is not KnowledgeBaseStatus.PENDING:
-                raise InvalidStatusTransitionError(current.status, KnowledgeBaseStatus.PENDING)
+            if current.status is not KnowledgeBaseStatus.PREPARING:
+                raise InvalidStatusTransitionError(
+                    current.status,
+                    KnowledgeBaseStatus.PREPARING,
+                )
+            if current.documents:
+                if current.documents == manifest:
+                    return current
+                raise CatalogValidationError(
+                    "Document manifest is immutable once attached."
+                )
             connection.execute(
                 """
                 UPDATE knowledge_bases
@@ -391,7 +431,18 @@ class KnowledgeBaseCatalog:
             new_chunk_count = current.chunk_count
             new_error_code: KnowledgeBaseErrorCode | None = None
 
-            if target is KnowledgeBaseStatus.INDEXING:
+            if target is KnowledgeBaseStatus.PENDING:
+                if internal_index_id is not None or chunk_count is not None or error_code is not None:
+                    raise CatalogValidationError(
+                        "Pending rejects index, chunk, and error overrides."
+                    )
+                if not current.documents:
+                    raise CatalogValidationError(
+                        "Pending requires an attached document manifest."
+                    )
+                new_index_id = None
+                new_chunk_count = 0
+            elif target is KnowledgeBaseStatus.INDEXING:
                 if internal_index_id is None or chunk_count is not None or error_code is not None:
                     raise CatalogValidationError(
                         "Indexing requires internal_index_id and rejects chunk_count/error_code."
@@ -475,24 +526,42 @@ class KnowledgeBaseCatalog:
                 connection.execute(_CREATE_TABLE_SQL)
                 self._create_indexes(connection)
                 connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
-            elif version == 2:
-                self._migrate_v2_to_v3(connection)
+            elif version in {2, 3}:
+                self._migrate_to_v4(connection, source_version=version)
             elif version != _SCHEMA_VERSION:
                 raise CatalogSchemaError()
             self._validate_schema(connection)
 
-    def _migrate_v2_to_v3(self, connection: sqlite3.Connection) -> None:
-        """Rebuild the table so SQLite accepts the durable cancelling state."""
+    def _migrate_to_v4(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        source_version: int,
+    ) -> None:
+        """Rebuild a supported legacy table with the explicit preparing state."""
 
         self._validate_schema(connection)
-        column_names = ", ".join(name for name, *_ in _EXPECTED_COLUMNS)
-        connection.execute("ALTER TABLE knowledge_bases RENAME TO knowledge_bases_v2")
+        names = tuple(name for name, *_ in _EXPECTED_COLUMNS)
+        column_names = ", ".join(names)
+        selected_columns = ", ".join(
+            (
+                "CASE WHEN status = 'pending' AND manifest_json = '[]' "
+                "THEN 'preparing' ELSE status END AS status"
+                if name == "status"
+                else name
+            )
+            for name in names
+        )
+        legacy_table = f"knowledge_bases_v{source_version}"
+        connection.execute(
+            f"ALTER TABLE knowledge_bases RENAME TO {legacy_table}"
+        )
         connection.execute(_CREATE_TABLE_SQL)
         connection.execute(
             f"INSERT INTO knowledge_bases ({column_names}) "
-            f"SELECT {column_names} FROM knowledge_bases_v2"
+            f"SELECT {selected_columns} FROM {legacy_table}"
         )
-        connection.execute("DROP TABLE knowledge_bases_v2")
+        connection.execute(f"DROP TABLE {legacy_table}")
         self._create_indexes(connection)
         connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
@@ -614,7 +683,10 @@ CREATE TABLE knowledge_bases (
     tenant_id TEXT NOT NULL,
     display_name TEXT NOT NULL,
     status TEXT NOT NULL CHECK (
-        status IN ('pending', 'indexing', 'cancelling', 'ready', 'failed', 'deleting')
+        status IN (
+            'preparing', 'pending', 'indexing', 'cancelling',
+            'ready', 'failed', 'deleting'
+        )
     ),
     internal_index_id TEXT,
     manifest_json TEXT NOT NULL,
