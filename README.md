@@ -23,7 +23,7 @@ Web 工作台覆盖知识库创建、异步索引进度、知识库切换与删�
 | 产品界面 | 同源 Web 工作台、拖放上传、任务进度、知识库管理、多轮问答、引用证据与隐私开关 |
 | 服务边界 | API Key / Bearer、reader / writer / operator、租户隔离、持久幂等、后台任务、限流 |
 | 可运维性 | liveness/readiness、隐私安全 JSON 事件、Prometheus 指标、Docker Compose、备份恢复手册 |
-| 质量 | 离线 Recall/MRR/nDCG、路由与引用指标、阈值校准、Python 3.11/3.12 CI、依赖审计 |
+| 质量 | 离线 Recall/MRR/nDCG、逐题失败诊断、P50/P95/P99、冻结质量门禁、阈值校准、Python 3.11/3.12 CI |
 
 ## 架构
 
@@ -142,10 +142,16 @@ python -m unittest discover -s tests -v
 python -m compileall -q rag_system tests scripts
 python scripts\benchmark_sparse.py evals\retrieval_cases.jsonl `
   evals\corpus\rag.md evals\corpus\retrieval.md `
-  evals\corpus\safety.md evals\corpus\storage.md
+  evals\corpus\safety.md evals\corpus\storage.md `
+  --top-k 5 `
+  --quality-gate evals\gates\bm25-smoke.json `
+  --json-output reports\bm25-smoke.json `
+  --markdown-output reports\bm25-smoke.md
 ```
 
 当前 12 题开发集上的依赖无关 BM25 冒烟基线为 Recall@5 `1.0000`、MRR@5 `0.9500`、nDCG@5 `0.9631`、路由准确率 `0.7500`。这个小型、仓库内开发集只用于回归，**不能外推为真实业务效果**，引用指标也不适用于该检索集。
+
+报告同时列出每题的缺失相关来源、期望/实际路由、首个相关排名、置信度和延迟，并汇总 P50/P95/P99。冻结门禁会校验数据集摘要、top-k 和最低指标；任何回归都会让本地检查与 GitHub CI 失败。延迟受硬件和缓存影响，当前只报告、不作为跨机器硬门槛。
 
 真实混合检索需要安装运行依赖后执行：
 
@@ -170,10 +176,12 @@ rag_system/
   file_store.py       # 租户隔离、原子且有界的上传存储
   ingestion.py        # 安全文档加载与确定性切分
   retrieval.py        # Chroma、混合检索、路由和索引持久化
+  benchmark.py        # 检索指标、逐题诊断与延迟分位数
+  quality_gate.py     # 绑定数据集的严格回归门禁
   service.py          # 问答、联网、研究模式、引用和会话编排
   metrics.py          # 有界 Prometheus 指标
   observability.py    # 不记录问题/文档正文的结构化事件
-evals/                # 标注检索集与离线评测夹具
+evals/                # 标注检索集、离线评测夹具与冻结质量门禁
 scripts/              # 基准、校准和质量检查入口
 tests/                # 单元、隔离、并发、故障与 API 契约测试
 ```

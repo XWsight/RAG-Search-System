@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+import math
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,16 +38,60 @@ class RetrievalBenchmarkCase:
 @dataclass(frozen=True, slots=True)
 class RetrievalPrediction:
     case_id: str
+    relevant_sources: tuple[str, ...]
     retrieved_sources: tuple[str, ...]
+    missing_relevant_sources: tuple[str, ...]
+    expected_route: Route
     predicted_route: Route
     confidence: float
+    first_relevant_rank: int | None
+    route_correct: bool
+    latency_ms: float
+
+    @property
+    def retrieval_correct(self) -> bool:
+        return not self.missing_relevant_sources
+
+    @property
+    def passed(self) -> bool:
+        return self.retrieval_correct and self.route_correct
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "case_id": self.case_id,
+            "relevant_sources": list(self.relevant_sources),
             "retrieved_sources": list(self.retrieved_sources),
+            "missing_relevant_sources": list(self.missing_relevant_sources),
+            "expected_route": self.expected_route.value,
             "predicted_route": self.predicted_route.value,
             "confidence": round(self.confidence, 6),
+            "first_relevant_rank": self.first_relevant_rank,
+            "route_correct": self.route_correct,
+            "retrieval_correct": self.retrieval_correct,
+            "passed": self.passed,
+            "latency_ms": round(self.latency_ms, 6),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalLatency:
+    case_count: int
+    total_ms: float
+    mean_ms: float
+    p50_ms: float
+    p95_ms: float
+    p99_ms: float
+    max_ms: float
+
+    def to_dict(self) -> dict[str, float | int]:
+        return {
+            "case_count": self.case_count,
+            "total_ms": round(self.total_ms, 6),
+            "mean_ms": round(self.mean_ms, 6),
+            "p50_ms": round(self.p50_ms, 6),
+            "p95_ms": round(self.p95_ms, 6),
+            "p99_ms": round(self.p99_ms, 6),
+            "max_ms": round(self.max_ms, 6),
         }
 
 
@@ -53,27 +99,65 @@ class RetrievalPrediction:
 class RetrievalBenchmarkRun:
     report: EvaluationReport
     predictions: tuple[RetrievalPrediction, ...]
+    latency: RetrievalLatency
 
     def to_json(self) -> str:
         payload = {
+            "schema_version": 2,
             "report": self.report.to_dict(),
+            "latency": self.latency.to_dict(),
             "predictions": [prediction.to_dict() for prediction in self.predictions],
         }
         return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
     def to_markdown(self) -> str:
-        lines = [self.report.to_markdown().rstrip(), "", "## 逐题结果", ""]
+        latency = self.latency
+        lines = [
+            self.report.to_markdown().rstrip(),
+            "",
+            "## 检索延迟",
+            "",
+            "> 单进程逐题延迟只适合发现同一环境中的明显回归，不能替代并发压测或生产 SLA。",
+            "",
+            "| 平均 | P50 | P95 | P99 | 最大值 |",
+            "| ---: | ---: | ---: | ---: | ---: |",
+            f"| {latency.mean_ms:.3f} ms | {latency.p50_ms:.3f} ms | "
+            f"{latency.p95_ms:.3f} ms | {latency.p99_ms:.3f} ms | {latency.max_ms:.3f} ms |",
+        ]
+        failures = tuple(prediction for prediction in self.predictions if not prediction.passed)
+        lines.extend(["", "## 失败诊断", ""])
+        if failures:
+            lines.extend(
+                [
+                    "| 样例 | 检索缺失 | 期望路由 | 实际路由 |",
+                    "| --- | --- | --- | --- |",
+                ]
+            )
+            for prediction in failures:
+                missing = ", ".join(prediction.missing_relevant_sources) or "—"
+                lines.append(
+                    f"| {_markdown_cell(prediction.case_id)} | {_markdown_cell(missing)} | "
+                    f"{prediction.expected_route.value} | {prediction.predicted_route.value} |"
+                )
+        else:
+            lines.append("全部样例均通过检索完整性与路由检查。")
+
+        lines.extend(["", "## 逐题结果", ""])
         lines.extend(
             [
-                "| 样例 | 路由 | 置信度 | 检索来源 |",
-                "| --- | --- | ---: | --- |",
+                "| 样例 | 状态 | 路由（期望 → 实际） | 首个相关排名 | 置信度 | 延迟 | 检索来源 |",
+                "| --- | --- | --- | ---: | ---: | ---: | --- |",
             ]
         )
         for prediction in self.predictions:
             sources = ", ".join(prediction.retrieved_sources) or "—"
+            first_rank = str(prediction.first_relevant_rank or "—")
+            status = "通过" if prediction.passed else "失败"
             lines.append(
-                f"| {prediction.case_id} | {prediction.predicted_route.value} | "
-                f"{prediction.confidence:.4f} | {sources} |"
+                f"| {_markdown_cell(prediction.case_id)} | {status} | "
+                f"{prediction.expected_route.value} → {prediction.predicted_route.value} | "
+                f"{first_rank} | {prediction.confidence:.4f} | "
+                f"{prediction.latency_ms:.3f} ms | {_markdown_cell(sources)} |"
             )
         return "\n".join(lines) + "\n"
 
@@ -158,6 +242,7 @@ def run_retrieval_benchmark(
     routing: RoutingPolicy,
     *,
     top_k: int = 5,
+    clock: Callable[[], float] = time.perf_counter,
 ) -> RetrievalBenchmarkRun:
     """Run the configured retrieval/routing pipeline and score real predictions."""
 
@@ -168,16 +253,44 @@ def run_retrieval_benchmark(
 
     predictions: list[RetrievalPrediction] = []
     evaluation_cases: list[EvaluationCase] = []
+    latencies: list[float] = []
     for case in cases:
+        started_at = clock()
         hits = tuple(retriever.search(case.question, top_k=top_k))
         decision = routing.decide(hits, allow_web=case.allow_web)
+        finished_at = clock()
+        if not all(math.isfinite(value) for value in (started_at, finished_at)):
+            raise ValueError("clock must return finite values")
+        if finished_at < started_at:
+            raise ValueError("clock must be monotonic")
+        latency_ms = (finished_at - started_at) * 1_000
+        latencies.append(latency_ms)
         retrieved_sources = _unique_sources(hits, top_k)
+        relevant_sources = tuple(source for source, _grade in case.relevance)
+        relevant_set = set(relevant_sources)
+        missing_sources = tuple(
+            source for source in relevant_sources if source not in retrieved_sources
+        )
+        first_relevant_rank = next(
+            (
+                rank
+                for rank, source in enumerate(retrieved_sources, start=1)
+                if source in relevant_set
+            ),
+            None,
+        )
         predictions.append(
             RetrievalPrediction(
                 case_id=case.case_id,
+                relevant_sources=relevant_sources,
                 retrieved_sources=retrieved_sources,
+                missing_relevant_sources=missing_sources,
+                expected_route=case.expected_route,
                 predicted_route=decision.route,
                 confidence=decision.confidence,
+                first_relevant_rank=first_relevant_rank,
+                route_correct=decision.route == case.expected_route,
+                latency_ms=latency_ms,
             )
         )
         evaluation_cases.append(
@@ -197,7 +310,32 @@ def run_retrieval_benchmark(
     return RetrievalBenchmarkRun(
         report=evaluate_cases(evaluation_cases, top_k=top_k),
         predictions=tuple(predictions),
+        latency=_latency_summary(latencies),
     )
+
+
+def _latency_summary(values: Sequence[float]) -> RetrievalLatency:
+    ordered = sorted(values)
+    total = sum(ordered)
+    return RetrievalLatency(
+        case_count=len(ordered),
+        total_ms=total,
+        mean_ms=total / len(ordered),
+        p50_ms=_percentile(ordered, 0.50),
+        p95_ms=_percentile(ordered, 0.95),
+        p99_ms=_percentile(ordered, 0.99),
+        max_ms=ordered[-1],
+    )
+
+
+def _percentile(ordered: Sequence[float], quantile: float) -> float:
+    position = (len(ordered) - 1) * quantile
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
 
 
 def _unique_sources(hits: Sequence[SearchHit], limit: int) -> tuple[str, ...]:
@@ -220,9 +358,14 @@ def _nonempty(value: object, field: str, location: str) -> str:
     return value.strip()
 
 
+def _markdown_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
 __all__ = [
     "RetrievalBenchmarkCase",
     "RetrievalBenchmarkRun",
+    "RetrievalLatency",
     "RetrievalPrediction",
     "load_retrieval_benchmark",
     "retrieval_case_from_mapping",

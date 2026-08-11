@@ -58,12 +58,43 @@ class RetrievalBenchmarkTests(unittest.TestCase):
             retriever,
             RoutingPolicy(Settings()),
             top_k=3,
+            clock=iter((10.0, 10.01, 20.0, 20.03)).__next__,
         )
         self.assertEqual(run.report.metrics.recall_at_k, 1.0)
         self.assertEqual(run.report.metrics.route_accuracy, 1.0)
         self.assertEqual(run.predictions[0].retrieved_sources, ("rag.md",))
+        self.assertEqual(run.predictions[0].first_relevant_rank, 1)
+        self.assertTrue(run.predictions[0].passed)
+        self.assertEqual(run.predictions[1].first_relevant_rank, None)
+        self.assertAlmostEqual(run.latency.mean_ms, 20.0)
+        self.assertAlmostEqual(run.latency.p50_ms, 20.0)
+        self.assertAlmostEqual(run.latency.p95_ms, 29.0)
+        self.assertAlmostEqual(run.latency.p99_ms, 29.8)
         self.assertIn("逐题结果", run.to_markdown())
-        self.assertEqual(json.loads(run.to_json())["report"]["case_count"], 2)
+        payload = json.loads(run.to_json())
+        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["report"]["case_count"], 2)
+        self.assertEqual(payload["latency"]["p95_ms"], 29.0)
+
+    def test_failures_explain_missing_sources_and_route_mismatch(self) -> None:
+        cases = (
+            RetrievalBenchmarkCase("missed", "unknown", (("rag.md", 3),), Route.LOCAL),
+        )
+        run = run_retrieval_benchmark(
+            cases,
+            FakeRetriever({}),
+            RoutingPolicy(Settings()),
+            clock=iter((1.0, 1.002)).__next__,
+        )
+
+        prediction = run.predictions[0]
+        self.assertFalse(prediction.passed)
+        self.assertEqual(prediction.missing_relevant_sources, ("rag.md",))
+        self.assertFalse(prediction.route_correct)
+        markdown = run.to_markdown()
+        self.assertIn("失败诊断", markdown)
+        self.assertIn("rag.md", markdown)
+        self.assertIn("local → refused", markdown)
 
     def test_empty_cases_and_invalid_top_k_are_rejected(self) -> None:
         routing = RoutingPolicy(Settings())
@@ -75,6 +106,13 @@ class RetrievalBenchmarkTests(unittest.TestCase):
                 FakeRetriever({}),
                 routing,
                 top_k=0,
+            )
+        with self.assertRaises(ValueError):
+            run_retrieval_benchmark(
+                [RetrievalBenchmarkCase("a", "q", (), Route.REFUSED)],
+                FakeRetriever({}),
+                RoutingPolicy(Settings()),
+                clock=iter((2.0, 1.0)).__next__,
             )
 
 

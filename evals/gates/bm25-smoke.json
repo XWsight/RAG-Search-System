@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "dataset_digest": "2723586171c4445d",
+  "top_k": 5,
+  "minimum_metrics": {
+    "mrr_at_k": 0.95,
+    "ndcg_at_k": 0.963,
+    "recall_at_k": 1.0,
+    "route_accuracy": 0.75
+  },
+  "maximum_latency_ms": {}
+}

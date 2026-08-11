@@ -20,6 +20,8 @@
 - **路由准确率**：全部样例中 `local`、`web` 或 `refused` 与人工期望一致的比例。
 - **引用有效率**：回答里出现的引用 ID 属于允许集合的比例。
 - **引用覆盖率**：被引用标记覆盖的事实句比例；它是格式启发式，不验证引用是否蕴含句子。
+- **逐题诊断**：记录相关来源缺失、期望/实际路由、首个相关来源排名、置信度和耗时，避免只看宏平均值掩盖失败样例。
+- **延迟分位数**：同一进程顺序执行每题检索与路由，并报告平均值、P50、P95、P99 和最大值。它适合同机 before/after，不代表并发吞吐或生产 SLA。
 
 真实检索基准按 `source_name` 去重后评分，而不是按 chunk ID。多个相关 chunk 命中同一文档只算一个来源。
 
@@ -46,6 +48,7 @@ python scripts/benchmark_sparse.py evals/retrieval_cases.jsonl `
   evals/corpus/safety.md `
   evals/corpus/storage.md `
   --top-k 5 `
+  --quality-gate evals/gates/bm25-smoke.json `
   --json-output reports/bm25-smoke.json `
   --markdown-output reports/bm25-smoke.md
 ```
@@ -62,6 +65,20 @@ python scripts/benchmark_sparse.py evals/retrieval_cases.jsonl `
 该开发集只有 12 个样例，其中 10 个有相关来源，语料仅 4 篇、主题与代码高度贴近。结果适合发现明显回归，**不可外推**到真实业务、不同语言、长文档、同名来源、噪声语料或更大知识库。路由准确率 0.75 也表明当前默认阈值在该集合上仍有误路由，不应只展示检索指标而隐藏路由表现。
 
 这个 benchmark 没有引用样例；Markdown 报告把引用有效率/覆盖率显示为 `N/A`。机器可读 JSON 为保持指标字段始终是数值，仍用 `1.0` 表示“没有待评引用时的约定值”，不能解释为生成引用达到 100%。
+
+### 冻结质量门禁
+
+[`evals/gates/bm25-smoke.json`](../evals/gates/bm25-smoke.json) 固定以下契约：
+
+- 数据集摘要必须为 `2723586171c4445d`，防止数据悄悄变化后继续沿用旧基线；
+- `top_k` 必须为 5，防止通过扩大候选数量伪造提升；
+- Recall@5 不低于 `1.0`、MRR@5 不低于 `0.95`、nDCG@5 不低于 `0.963`、路由准确率不低于 `0.75`；
+- 门禁 JSON 使用严格 schema：未知字段、重复键、NaN、无穷大、越界值和错误类型都会失败；
+- 指标回归时脚本仍先写出逐题 JSON/Markdown 报告，然后以退出码 `3` 结束，便于 CI 保存诊断。
+
+延迟门槛字段已经受 schema 支持，但当前仓库门禁保持为空。GitHub runner、开发机、模型冷启动和缓存会造成明显波动；在没有固定硬件与预热协议前，用跨机器毫秒阈值阻止提交会制造噪声。延迟数字目前必须和运行环境一起报告。
+
+基准命令默认不读取项目 `.env`，避免 API Key 或本地运行参数无意间污染可复现结果。如确实要复现某个部署配置，显式添加 `--dotenv path/to/evaluation.env`，并在报告旁记录该配置的脱敏摘要。
 
 ## 3. 真实 hybrid benchmark
 
@@ -86,7 +103,7 @@ python scripts/benchmark_retrieval.py evals/retrieval_cases.jsonl `
 - `RAG_LOCAL_CONFIDENCE` 和 top-k；
 - ground truth 文件摘要与 corpus 内容摘要。
 
-仓库当前不附带一份已经执行的 hybrid 结果，因此不得引用 BM25 数字作为 hybrid 成绩。建议把报告保存到忽略跟踪的 `reports/`，在变更说明中提供 before/after、运行环境和报告摘要。
+仓库当前不附带 hybrid 质量门禁或已经执行的 hybrid 结果。冻结独立 validation 集后，可以按 BM25 gate 的严格格式创建独立门禁，并用 `--quality-gate path/to/hybrid-quality-gate.json` 启用。不得引用 BM25 数字作为 hybrid 成绩。建议把报告保存到忽略跟踪的 `reports/`，在变更说明中提供 before/after、运行环境和报告摘要。
 
 ## 路由阈值校准
 
@@ -128,7 +145,7 @@ python scripts/calibrate_threshold.py `
 - 回答正确性、完整性、拒答质量和引用蕴含；
 - 间接提示注入成功率、隐私外发和有害输出；
 - 多轮记忆、研究模式、多查询规划和 Web 来源质量；
-- P50/P95/P99 延迟、吞吐、并发、成本、索引时间和峰值内存；
+- 并发吞吐、端到端生成延迟、成本、索引时间和峰值内存；当前仅实现顺序检索/路由的 P50/P95/P99；
 - 供应商故障、磁盘满、进程终止和恢复一致性。
 
 若引入 LLM-as-judge，必须固定 judge 模型/版本/prompt，加入人工校准和顺序盲化，并把 judge 结果与硬指标分开。高风险结论应抽样人工核验，不能把一个模型评价另一个模型当作客观真值。

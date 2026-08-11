@@ -12,9 +12,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from rag_system.benchmark import load_retrieval_benchmark, run_retrieval_benchmark  # noqa: E402
-from rag_system.config import load_settings  # noqa: E402
+from rag_system.config import Settings, load_settings  # noqa: E402
 from rag_system.domain import SearchHit  # noqa: E402
+from rag_system.evaluation import DatasetValidationError  # noqa: E402
 from rag_system.ingestion import DocumentIngestor  # noqa: E402
+from rag_system.quality_gate import evaluate_quality_gate, load_quality_gate  # noqa: E402
 from rag_system.retrieval import RoutingPolicy  # noqa: E402
 from rag_system.sparse import BM25Index, SparseDocument  # noqa: E402
 
@@ -48,14 +50,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("dataset", type=Path)
     parser.add_argument("documents", nargs="+", type=Path)
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument(
+        "--dotenv",
+        type=Path,
+        help="显式加载指定 dotenv；默认不读取项目 .env，避免基准被本地密钥配置污染",
+    )
     parser.add_argument("--json-output", type=Path)
     parser.add_argument("--markdown-output", type=Path)
+    parser.add_argument(
+        "--quality-gate",
+        type=Path,
+        help="严格质量门禁 JSON；指标回归时以退出码 3 结束",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
-    settings = load_settings()
+    settings = (
+        load_settings(dotenv_path=arguments.dotenv)
+        if arguments.dotenv is not None
+        else Settings().validate()
+    )
     ingestion = DocumentIngestor(settings).ingest(arguments.documents, namespace="bm25-baseline")
     run = run_retrieval_benchmark(
         load_retrieval_benchmark(arguments.dataset),
@@ -69,6 +85,16 @@ def main(argv: list[str] | None = None) -> int:
         _write(arguments.markdown_output, run.to_markdown())
     if not arguments.json_output and not arguments.markdown_output:
         print(run.to_markdown(), end="")
+    if arguments.quality_gate:
+        try:
+            result = evaluate_quality_gate(run, load_quality_gate(arguments.quality_gate))
+        except (DatasetValidationError, TypeError, ValueError) as error:
+            print(f"质量门禁加载失败：{error}", file=sys.stderr)
+            return 2
+        if not result.passed:
+            print(run.to_markdown(), file=sys.stderr, end="")
+            print(result.to_markdown(), file=sys.stderr, end="")
+            return 3
     return 0
 
 
