@@ -60,7 +60,7 @@ class KnowledgeBaseUnavailableError(CatalogError):
 
 
 class InvalidStatusTransitionError(CatalogError):
-    def __init__(self, current: "KnowledgeBaseStatus", target: "KnowledgeBaseStatus") -> None:
+    def __init__(self, current: KnowledgeBaseStatus, target: KnowledgeBaseStatus) -> None:
         super().__init__(f"Invalid knowledge base status transition: {current.value} -> {target.value}.")
 
 

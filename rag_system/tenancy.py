@@ -107,7 +107,7 @@ class ApiKeyAuthenticator:
     _records: tuple[_CredentialRecord, ...] = field(repr=False)
 
     @classmethod
-    def from_mapping(cls, credentials: Mapping[str, Principal]) -> "ApiKeyAuthenticator":
+    def from_mapping(cls, credentials: Mapping[str, Principal]) -> ApiKeyAuthenticator:
         """Hash an explicit ``raw key -> principal`` mapping immediately.
 
         The caller remains responsible for discarding its input mapping.  The
@@ -205,7 +205,7 @@ class ResourceAuthorizer:
     _owners: Mapping[str, TenantId] = field(repr=False, compare=False)
 
     @classmethod
-    def from_mapping(cls, owners: Mapping[str, TenantId]) -> "ResourceAuthorizer":
+    def from_mapping(cls, owners: Mapping[str, TenantId]) -> ResourceAuthorizer:
         if not isinstance(owners, Mapping):
             raise TypeError("owners must be a mapping")
         normalized: dict[str, TenantId] = {}

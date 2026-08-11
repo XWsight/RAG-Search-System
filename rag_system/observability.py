@@ -90,13 +90,13 @@ class TraceContext:
         *,
         trace_id: str | None = None,
         request_id: str | None = None,
-    ) -> "TraceContext":
+    ) -> TraceContext:
         return cls(
             trace_id=trace_id or _new_identifier("trace"),
             request_id=request_id or _new_identifier("request"),
         )
 
-    def child_request(self) -> "TraceContext":
+    def child_request(self) -> TraceContext:
         return TraceContext(trace_id=self.trace_id, request_id=_new_identifier("request"))
 
 

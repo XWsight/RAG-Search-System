@@ -54,7 +54,7 @@ class LoaderLimits:
     max_paragraphs: int = 20_000
     max_characters: int = 2_000_000
 
-    def validate(self) -> "LoaderLimits":
+    def validate(self) -> LoaderLimits:
         integer_limits = (
             self.max_documents,
             self.max_file_bytes,

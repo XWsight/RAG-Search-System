@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "exceptions": [
+    {
+      "vulnerability_id": "PYSEC-2026-311",
+      "aliases": [
+        "CVE-2026-45829",
+        "GHSA-f4j7-r4q5-qw2c"
+      ],
+      "package": "chromadb",
+      "pinned_version": "1.5.9",
+      "advisory": "https://github.com/advisories/GHSA-f4j7-r4q5-qw2c",
+      "owner": "XWsight",
+      "reviewed_on": "2026-08-11",
+      "expires_on": "2026-09-01",
+      "rationale": "The upstream project has no patched release. RAG Studio uses only an embedded PersistentClient with a fixed embedding implementation and does not start or expose the vulnerable Chroma HTTP collection-creation API.",
+      "compensating_controls": [
+        "Only the authenticated RAG Studio API is exposed; no Chroma server process, route, or port is published.",
+        "Embedding model identity and remote-code settings are fixed by trusted configuration and cannot be supplied by an API request.",
+        "The container runs as an unprivileged user, uses a single-node storage lease, and rejects untrusted collection identifiers.",
+        "CI validates this exception on every run and fails closed on its expiry date or when the exact dependency pin changes."
+      ]
+    }
+  ]
+}

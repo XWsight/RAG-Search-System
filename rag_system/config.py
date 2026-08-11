@@ -171,7 +171,7 @@ class Settings:
     def default_document(self) -> Path:
         return self.project_root / "data" / "knowledge.txt"
 
-    def validate(self) -> "Settings":
+    def validate(self) -> Settings:
         if not str(self.storage_root).strip():
             raise ValueError("storage_root cannot be empty")
         if not 100 <= self.chunk_size <= 4_000:

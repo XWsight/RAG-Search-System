@@ -99,9 +99,25 @@ Prometheus 指标使用固定 operation/outcome/route/provider 等低基数枚�
 
 ## 依赖与供应链
 
-CI 运行 Ruff、Python 3.11/3.12 单元测试、分支覆盖率门槛和 `pip-audit -r requirements.txt`。直接运行依赖固定到具体版本，容器以非 root、只读根文件系统和收紧 capabilities 的方式运行。
+CI 运行 Ruff、Python 3.11/3.12 单元测试、分支覆盖率门槛和严格依赖审计。依赖审计读取未过滤的 `pip-audit` JSON；任何新漏洞、可升级修复、版本漂移、陈旧例外或过期例外都会失败。直接运行依赖固定到具体版本，容器以非 root、只读根文件系统和收紧 capabilities 的方式运行。
 
-这不是完整供应链保证：传递依赖未按哈希锁定，`pip-audit` 只反映其漏洞数据库在扫描时已知的问题，也不验证恶意包、模型权重或构建来源。发布流程应生成 SBOM、锁定传递依赖与哈希、保留镜像 digest、扫描镜像和模型制品，并在预生产环境回归升级。
+当前安装的 `chromadb==1.5.9` 属于
+[`PYSEC-2026-311`](https://github.com/advisories/GHSA-f4j7-r4q5-qw2c) 的受影响版本；
+这是 Critical 级代码注入公告且上游尚无修复版本，不是误报。受支持部署只使用嵌入式
+`PersistentClient` 和由受信运维配置固定的 Embedding，不启动 `chroma run`，不使用
+`chromadb.HttpClient`，也不发布
+Chroma `/api/v2` 或任何 Chroma 网络端口，因此公告描述的未认证服务端利用路径在该部署边界内不可达。
+持久卷和已有 collection 仍必须视作受信输入；导入不可信 Chroma 数据、允许请求控制模型仓库或
+`trust_remote_code`、启动 Chroma Server，都会立即使这一风险判断失效。
+
+唯一临时例外记录在 [`security/dependency-exceptions.json`](../security/dependency-exceptions.json)，
+于 2026-08-11 接受并复核，并在 2026-09-01 **当天自动失效**。CI 精确核对漏洞 ID/alias、包名、版本、
+是否已出现修复版本以及该 finding 是否仍存在；它不会忽略其他漏洞，也没有 `continue-on-error`。
+到期前必须升级到修复版、采用经过验证的补丁或替换向量后端；若仍需接受风险，必须重新评审并提交
+新的有期限记录，不能静默延长。用户可控 PDF 的两个可修复公告没有进入例外，而是通过升级
+`pypdf==6.15.0` 处理。
+
+这不是完整供应链保证：多数传递依赖仍未按哈希锁定，`pip-audit` 只反映其漏洞数据库在扫描时已知的问题，也不验证恶意包、模型权重或构建来源。发布流程应生成 SBOM、锁定传递依赖与哈希、保留镜像 digest、扫描镜像和模型制品，并在预生产环境回归升级。
 
 ## 上线前必须补充的验证
 

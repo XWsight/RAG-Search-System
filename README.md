@@ -181,6 +181,10 @@ tests/                # 单元、隔离、并发、故障与 API 契约测试
 
 威胁模型、残余风险和安全报告流程见[安全设计](docs/security.md)与[安全策略](SECURITY.md)。
 
+> 依赖边界：当前 Chroma 上游尚无针对 `PYSEC-2026-311` 的修复版本。本项目仅支持嵌入式
+> `PersistentClient`，不得运行或暴露 Chroma Server；精确、会到期的风险例外及补偿控制见
+> [依赖与供应链](docs/security.md#依赖与供应链)。
+
 ## 当前非目标
 
 - 多副本写入、跨可用区容灾和零停机滚动升级

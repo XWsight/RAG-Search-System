@@ -65,7 +65,7 @@ class StorageRootLease:
         self._handle = None
 
     @classmethod
-    def acquire(cls, storage_root: Path) -> "StorageRootLease":
+    def acquire(cls, storage_root: Path) -> StorageRootLease:
         lease = cls(storage_root / ".rag-studio.instance")
         lease._acquire()
         return lease

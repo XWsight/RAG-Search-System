@@ -63,12 +63,15 @@ curl -H 'X-API-Key: <调用方密钥>' http://127.0.0.1:8000/v1/knowledge-bases
 - 进程固定以 UID/GID `10001:10001` 运行，不拥有 Linux capabilities，并启用 `no-new-privileges`。
 - 容器根文件系统只读；仅 `/data` 和受限的 `/tmp` 可写。
 - `/data` 包含目录型文档存储、`catalog.sqlite3`、Chroma 数据和模型缓存。
+- Chroma 只允许作为当前进程的嵌入式 `PersistentClient` 使用，Embedding 实现和模型标识只能由受信部署配置固定。禁止启动或暴露 Chroma Server、使用 `chromadb.HttpClient`、发布或代理 Chroma 网络端口，或把不可信 collection/卷挂载到 `/data/vector`。这些限制是当前临时依赖安全例外的强制条件，详情见[安全设计](security.md#依赖与供应链)与[机器校验记录](../security/dependency-exceptions.json)。
 - Compose 设置 CPU、内存、进程数、文件描述符和日志轮转边界。默认 4 GiB 只是起点，不能替代压测。
 - API 固定一个 Uvicorn worker。增加 worker 数不会把本地状态变成分布式状态，反而会破坏任务、限流和存储的一致性。
 - 启动时会在持久根获取 OS 级独占实例锁；第二个指向同一 `/data` 的进程会快速失败。该锁是最后一道保护，不替代编排层的单副本约束。
 - SIGTERM 触发最多 30 秒的应用优雅关闭，Compose 等待 45 秒后才强制终止。
 
 如果改用宿主机绑定目录而不是命名卷，应先创建专用目录并把它的属主设为 `10001:10001`，同时确认其中没有符号链接。不要为了绕过权限问题而让容器以 root 运行。
+
+该例外已于 `2026-08-11` 接受并复核；CI 从 `2026-09-01` 当天起关闭式失败。到期时必须升级到上游确认的修复版本、替换向量后端，或基于新的证据和期限重新审批。任何上述运行边界变更都会立即使例外失效，不能等待到期日后再处理。
 
 ## 构建与发布可复现性
 
