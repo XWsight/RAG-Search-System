@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "suite_digest": "128a3bedb786c8b4",
+  "case_count": 200,
+  "family_count": 50,
+  "source_count": 10,
+  "category_count": 12,
+  "cases_by_split": {
+    "development": 80,
+    "validation": 60,
+    "test": 60
+  },
+  "cases_by_route": {
+    "local": 160,
+    "refused": 20,
+    "web": 20
+  },
+  "cases_by_difficulty": {
+    "easy": 56,
+    "medium": 84,
+    "hard": 60
+  }
+}

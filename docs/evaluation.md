@@ -2,12 +2,15 @@
 
 本项目把“评测代码能计算指标”“小型开发集 smoke test”和“真实混合检索表现”分开报告。任何结果都必须同时说明数据集、代码/配置、模型、top-k 和运行日期；不得把夹具输出包装成生产质量结论。
 
+数据维护、双人标注、family 语义和 split 使用规则见 [`evals/README.md`](../evals/README.md)。
+
 ## 三类证据
 
 | 层级 | 输入 | 实际测量对象 | 能说明什么 | 不能说明什么 |
 | --- | --- | --- | --- | --- |
 | 指标夹具 | [`evals/sample_dataset.jsonl`](../evals/sample_dataset.jsonl) | 预先写入的 `retrieved_ids`、`predicted_route`、`answer` 和引用 | JSONL 严格校验、指标公式、引用 ID 审计和报告渲染工作正常 | 当前检索器、Embedding、路由或模型回答的质量 |
 | BM25 smoke baseline | [`evals/retrieval_cases.jsonl`](../evals/retrieval_cases.jsonl) + 4 个 corpus 文档 | 真实 DocumentIngestor 切分、依赖无关的 BM25 检索和当前 RoutingPolicy | 小型开发语料上的确定性回归基线 | 混合检索、真实业务、生成质量、规模/并发表现 |
+| 200-case retrieval suite | [`evals/retrieval_suite.json`](../evals/retrieval_suite.json) + 10 篇来源 | 50 个语义家族的改写鲁棒性、来源隔离 split、困难度、路由与完整 BM25 回归 | 更广覆盖下的确定性检索下限和逐题失败资产 | 200 个独立事实、真实客户分布、混合检索或生产 SLA |
 | 真实本地检索基准 | 同一 ground truth + 当前 Chroma/HuggingFace/BM25/RRF/可选 reranker | 实际本地检索结果和路由 | 指定模型与配置在该数据集上的检索/路由结果 | 云生成事实性、真实流量泛化或生产 SLA |
 
 `retrieval_cases.jsonl` 是严格 ground truth，只允许问题、相关来源、期望路由和 `allow_web`；loader 会拒绝混入预测字段。这样可避免把手写预测误当作系统输出。
@@ -80,7 +83,48 @@ python scripts/benchmark_sparse.py evals/retrieval_cases.jsonl `
 
 基准命令默认不读取项目 `.env`，避免 API Key 或本地运行参数无意间污染可复现结果。如确实要复现某个部署配置，显式添加 `--dotenv path/to/evaluation.env`，并在报告旁记录该配置的脱敏摘要。
 
-## 3. 真实 hybrid benchmark
+## 3. 200-case retrieval foundation suite
+
+[`evals/retrieval_suite.json`](../evals/retrieval_suite.json) 不是把 18 条题目机械复制。它包含 50 个语义家族，每个家族有 4 种人工编写问法，共 200 个 case；10 篇来源只属于 development、validation 或 test 中的一个分段，loader 会拒绝同一来源跨分段出现。覆盖矩阵为：
+
+| 维度 | 分布 |
+| --- | --- |
+| split | development 80 / validation 60 / test 60 |
+| route | local 160 / refused 20 / web 20 |
+| difficulty | easy 56 / medium 84 / hard 60 |
+| semantics | 50 families / 12 categories / 10 source documents |
+
+先验证数据契约，再运行全语料基线：
+
+```powershell
+python scripts/validate_retrieval_suite.py evals/retrieval_suite.json `
+  --contract evals/gates/retrieval-suite.json `
+  --json-output reports/retrieval-suite.json `
+  --markdown-output reports/retrieval-suite.md
+
+python scripts/benchmark_sparse.py evals/retrieval_suite.json `
+  --top-k 5 `
+  --quality-gate evals/gates/bm25-foundation.json `
+  --json-output reports/bm25-foundation.json `
+  --markdown-output reports/bm25-foundation.md
+```
+
+manifest 使用严格 JSON、精确字段和显式最低覆盖要求。校验会拒绝：重复 family/case、忽略空白和标点后相同的问题、错误的 `allow_web`/route/relevance 组合、不存在或逃逸 corpus 根的路径、符号链接来源、来源跨 split 泄漏，以及低于声明的题量、家族、类别、route、difficulty 或 split 覆盖。独立冻结契约还绑定规范化 manifest、全部 corpus 正文 SHA-256 和精确覆盖矩阵；当前 bundle 摘要为 `128a3bedb786c8b4`，因此只改语料正文也会让 CI 失败。
+
+2026-08-11、摘要 `5dba420a8979a05d` 的 10 文档全语料 BM25 运行结果为：
+
+| 指标 | 结果 |
+| --- | ---: |
+| Recall@5 | 0.984375000000 |
+| MRR@5 | 0.956770833333 |
+| nDCG@5 | 0.959200740890 |
+| 路由准确率 | 0.800000000000 |
+
+160 个本地问题中有 4 个未完整召回，主要来自跨来源问题和更大语料中的干扰项；40 个无本地答案的问题全部暴露了当前 BM25 置信度路由容易选择本地的弱点。冻结门禁锁住这个下限是为了防止继续退化，`0.8` **不是目标路由质量**。后续 Hybrid、阈值和拒答优化必须在 validation 上提高结果，并在冻结 test 上复核，不能通过删除困难题或降低门槛制造提升。
+
+可用 `--split development|validation|test` 单独运行来源隔离分段。分段只索引该 split 的文档，因此适合开发和误差分析；全套运行同时加入其余文档作为干扰项，结果不能与分段数字直接混为一谈。200 个 case 中包含同一家族的语义改写，汇报时必须同时写明“200 questions / 50 semantic families”，不得宣称 200 个独立事实。
+
+## 4. 真实 hybrid benchmark
 
 先安装运行依赖；首次运行可能下载 Embedding 模型。该命令只执行本地索引和检索，不调用智谱 Chat 或 Web Search：
 
@@ -105,6 +149,8 @@ python scripts/benchmark_retrieval.py evals/retrieval_cases.jsonl `
 - ground truth 文件摘要与 corpus 内容摘要。
 
 当前 18 题 Hybrid 开发基线的 Recall@5、MRR@5、nDCG@5 和路由准确率均为 `1.0`，并由 [`hybrid-development.json`](../evals/gates/hybrid-development.json) 冻结。它需要实际加载 Embedding 模型，是发布前手动门禁；默认 CI 只运行不依赖模型下载的 BM25 门禁。该结果来自本地 `BAAI/bge-small-zh-v1.5`、当前依赖与默认配置，不代表独立 blind test、生成质量或生产 SLA。不得引用 BM25 数字作为 Hybrid 成绩，也不得把这 18 题的满分外推为真实业务准确率。
+
+同一环境首次运行 200 题全语料 Hybrid 得到 Recall@5 `0.984375`、MRR@5 `0.953646`、nDCG@5 `0.953695`、路由准确率 `0.885000`，由 [`hybrid-foundation.json`](../evals/gates/hybrid-foundation.json) 冻结为手动下限。它比 BM25 的路由准确率高，但排序指标略低，说明稠密候选和 RRF 当前并非全面增益。后续只能用 development 开发、validation 选参数，再在冻结 test 上做最终复核；不能根据全套逐题结果反复改写 test。
 
 ## 路由阈值校准
 

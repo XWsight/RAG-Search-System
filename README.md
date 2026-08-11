@@ -153,6 +153,20 @@ python scripts\benchmark_sparse.py evals\retrieval_cases.jsonl `
 
 报告同时列出每题的缺失相关来源、期望/实际路由、首个相关排名、置信度和延迟，并汇总 P50/P95/P99。冻结门禁会校验数据集摘要、top-k 和最低指标；依赖无关的 BM25 门禁由本地检查与 GitHub CI 自动执行。延迟受硬件和缓存影响，当前只报告、不作为跨机器硬门槛。
 
+正式检索回归套件使用严格 manifest 管理 50 个语义家族、200 个问题、10 篇来源和 12 个类别。开发/验证/test 分段分别为 80/60/60 题，相关来源文档禁止跨分段复用；本地、拒答和联网路由分别为 160/20/20 题。校验器会拒绝规范化重复问题、缺失或越界来源、错误路由标签、来源泄漏和覆盖不足：
+
+```powershell
+python scripts\validate_retrieval_suite.py evals\retrieval_suite.json `
+  --contract evals\gates\retrieval-suite.json
+python scripts\benchmark_sparse.py evals\retrieval_suite.json `
+  --top-k 5 `
+  --quality-gate evals\gates\bm25-foundation.json `
+  --json-output reports\bm25-foundation.json `
+  --markdown-output reports\bm25-foundation.md
+```
+
+当前 suite/corpus bundle 摘要为 `128a3bedb786c8b4`，题目 ground truth 摘要为 `5dba420a8979a05d`。全语料 BM25 下限为 Recall@5 `0.9844`、MRR@5 `0.9568`、nDCG@5 `0.9592`、路由准确率 `0.8000`。路由分数暴露出词法置信度会把越界问题误判为本地可回答，属于下一轮需要改善的已知基线，不能被描述为目标成绩。`--split development|validation|test` 可以只运行一个来源隔离分段；同义问法用于鲁棒性覆盖，因此 200 题应同时报告为 50 个独立语义家族，不能包装成 200 个独立知识点。
+
 真实混合检索需要安装运行依赖后执行：
 
 ```powershell
@@ -164,6 +178,8 @@ python scripts\benchmark_retrieval.py evals\retrieval_cases.jsonl `
 ```
 
 在当前本地模型标识与默认配置下，当前 18 题 Hybrid 开发基线的 Recall@5、MRR@5、nDCG@5 和路由准确率均为 `1.0000`。该门禁需要下载并运行 Embedding 模型，因此是发布前手动门禁，不在默认 CI 中执行。该集合专门加入了语义改写、本地越界和必须联网的对抗题，仍然只是开发回归证据，不是生产质量或真实业务泛化证明。
+
+200 题套件的首次真实 Hybrid 全语料基线为 Recall@5 `0.9844`、MRR@5 `0.9536`、nDCG@5 `0.9537`、路由准确率 `0.8850`，冻结在 `evals/gates/hybrid-foundation.json`。相比纯 BM25，路由改善但排序没有改善，证明当前融合仍有优化空间；该门禁只手动运行，不因结果较大就替代 18 题秒级回归。
 
 云端生成不再把引用关系藏在自由文本中。模型必须返回由原子 `claims`、每条结论的 `citation_ids` 和明确的 `insufficient` 状态组成的 JSON；供应商适配器与应用服务会分别校验同一证据契约，API 同时返回可直接审计的 `claims` 映射和兼容展示用文本。该机制保证引用 ID 存在且每条生成结论都有归因，但**不等于语义蕴含或事实正确性已经被证明**。
 
@@ -179,7 +195,7 @@ python scripts\benchmark_answers.py evals\answer_cases.jsonl `
 
 2026-08-11 的一次 4 题/8 原子事实开发运行中，结构契约、拒答、事实召回、原子结论和归因五项均为 `1.0000`。这是会受模型版本与随机性影响的手动发布冒烟结果；门禁最低值为 `0.75`，不在默认 CI 中执行，也不能外推为生产准确率。
 
-评测协议、数据泄漏防范与阈值校准见[评测文档](docs/evaluation.md)。仓库中的 `evals/sample_dataset.jsonl` 是评测格式夹具，不是系统性能证明。
+评测协议、数据泄漏防范与阈值校准见[评测文档](docs/evaluation.md)，数据标注与 split 治理见[评测数据说明](evals/README.md)。仓库中的 `evals/sample_dataset.jsonl` 是评测格式夹具，不是系统性能证明。
 
 ## 项目结构
 
@@ -202,6 +218,7 @@ rag_system/
   ingestion.py        # 安全文档加载与确定性切分
   retrieval.py        # Chroma、混合检索、路由和索引持久化
   benchmark.py        # 检索指标、逐题诊断与延迟分位数
+  benchmark_suite.py  # 评测家族、覆盖矩阵、来源隔离和泄漏校验
   quality_gate.py     # 绑定数据集的严格回归门禁
   answer_benchmark.py # 结构化回答事实、拒答、原子性与归因评测
   answer_quality_gate.py # 绑定回答数据集的手动发布门禁

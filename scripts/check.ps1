@@ -48,6 +48,17 @@ try {
         --quality-gate evals/gates/bm25-smoke.json `
         --json-output reports/bm25-smoke.json `
         --markdown-output reports/bm25-smoke.md
+    Invoke-CheckedPython scripts/validate_retrieval_suite.py `
+        evals/retrieval_suite.json `
+        --contract evals/gates/retrieval-suite.json `
+        --json-output reports/retrieval-suite.json `
+        --markdown-output reports/retrieval-suite.md
+    Invoke-CheckedPython scripts/benchmark_sparse.py `
+        evals/retrieval_suite.json `
+        --top-k 5 `
+        --quality-gate evals/gates/bm25-foundation.json `
+        --json-output reports/bm25-foundation.json `
+        --markdown-output reports/bm25-foundation.md
     Invoke-CheckedPython -m coverage run -m unittest discover -s tests -v
     Invoke-CheckedPython -m coverage report
     Invoke-CheckedGit diff --check

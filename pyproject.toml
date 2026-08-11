@@ -55,6 +55,7 @@ files = [
   "rag_system/application.py",
   "rag_system/application_ports.py",
   "rag_system/assets.py",
+  "rag_system/benchmark_suite.py",
   "rag_system/bootstrap.py",
   "rag_system/catalog.py",
   "rag_system/config.py",

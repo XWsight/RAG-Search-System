@@ -79,9 +79,11 @@ CI 在 Python 3.11/3.12 上执行单元测试、Ruff、分支覆盖率门槛和�
 - 是否运行真实 hybrid、云端、人工、延迟或安全测试；
 - 未运行项目和原因。
 
-`evals/sample_dataset.jsonl` 只是指标夹具。不得用它声明实际系统性能。18-case BM25/Hybrid 和 4-case/8-fact 回答结果都只是开发回归基线，也不得外推。
+`evals/sample_dataset.jsonl` 只是指标夹具。不得用它声明实际系统性能。18-case BM25/Hybrid、200-question/50-family 检索套件和 4-case/8-fact 回答结果都只是仓库内回归基线，也不得外推为真实客户分布或生产质量。
 
-若有意更新 [`evals/gates/bm25-smoke.json`](evals/gates/bm25-smoke.json)，提交必须解释数据集摘要变化、逐题差异和门槛调整理由。不得为了让退化代码通过而单独降低门槛。
+若有意更新 [`evals/gates/bm25-smoke.json`](evals/gates/bm25-smoke.json) 或 [`evals/gates/bm25-foundation.json`](evals/gates/bm25-foundation.json)，提交必须解释数据集摘要变化、语义家族与 split 覆盖、逐题差异和门槛调整理由。不得为了让退化代码通过而单独降低门槛；同一来源不得跨 development/validation/test 泄漏。
+
+真实 Hybrid 对完整套件的手动下限由 [`evals/gates/hybrid-foundation.json`](evals/gates/hybrid-foundation.json) 约束。它不进入默认 CI，修改 Embedding、融合、重排或路由时仍必须报告 development/validation 的 before/after，并说明 test 是否保持冻结。
 
 修改 Chat provider、生成 prompt、claim schema 或证据渲染时，还必须运行 [`answer-live.json`](evals/gates/answer-live.json) 手动门禁并保存脱敏报告。该门禁调用外部模型、有成本且非确定，因此不进入默认 CI；降低门槛必须附失败样例、人工复核和明确理由。
 

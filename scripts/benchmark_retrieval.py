@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from rag_system.benchmark import load_retrieval_benchmark, run_retrieval_benchmark  # noqa: E402
+from rag_system.benchmark_suite import load_retrieval_suite  # noqa: E402
 from rag_system.config import Settings, load_settings  # noqa: E402
 from rag_system.evaluation import DatasetValidationError  # noqa: E402
 from rag_system.index_manager import IndexManager  # noqa: E402
@@ -23,9 +24,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="使用真实本地索引运行检索与路由基准；不会调用云端服务。"
     )
-    parser.add_argument("dataset", type=Path, help="检索基准 JSONL")
-    parser.add_argument("documents", nargs="+", type=Path, help="组成基准语料库的文档")
+    parser.add_argument("dataset", type=Path, help="检索基准 JSONL 或 suite JSON")
+    parser.add_argument(
+        "documents",
+        nargs="*",
+        type=Path,
+        help="JSONL 基准语料；suite manifest 会自行解析 corpus",
+    )
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument(
+        "--split",
+        choices=("development", "validation", "test"),
+        help="只运行 suite 中一个按来源隔离的数据分段",
+    )
     parser.add_argument(
         "--dotenv",
         type=Path,
@@ -50,9 +61,29 @@ def main(argv: list[str] | None = None) -> int:
             if arguments.dotenv is not None
             else Settings().validate()
         )
+        if arguments.dataset.suffix.lower() == ".json":
+            if arguments.documents:
+                raise DatasetValidationError(
+                    "suite manifest cannot be combined with explicit documents"
+                )
+            suite = load_retrieval_suite(arguments.dataset)
+            cases = suite.cases_for_split(arguments.split) if arguments.split else suite.cases
+            documents = (
+                suite.documents_for_split(arguments.split)
+                if arguments.split
+                else suite.documents
+            )
+        else:
+            if arguments.split:
+                raise DatasetValidationError("--split is valid only for suite manifests")
+            if not arguments.documents:
+                raise DatasetValidationError(
+                    "JSONL benchmark requires at least one document"
+                )
+            cases = load_retrieval_benchmark(arguments.dataset)
+            documents = tuple(arguments.documents)
         manager = IndexManager(settings, ChromaIndexRepository(settings))
-        index_ref = manager.build(arguments.documents)
-        cases = load_retrieval_benchmark(arguments.dataset)
+        index_ref = manager.build(documents)
         run = run_retrieval_benchmark(
             cases,
             manager.get(index_ref.index_id),

@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from rag_system.benchmark import load_retrieval_benchmark, run_retrieval_benchmark  # noqa: E402
+from rag_system.benchmark_suite import load_retrieval_suite  # noqa: E402
 from rag_system.config import Settings, load_settings  # noqa: E402
 from rag_system.domain import SearchHit  # noqa: E402
 from rag_system.evaluation import DatasetValidationError  # noqa: E402
@@ -49,9 +50,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the dependency-free BM25 baseline; no cloud calls are made."
     )
-    parser.add_argument("dataset", type=Path)
-    parser.add_argument("documents", nargs="+", type=Path)
+    parser.add_argument("dataset", type=Path, help="JSONL ground truth or suite JSON manifest")
+    parser.add_argument(
+        "documents",
+        nargs="*",
+        type=Path,
+        help="JSONL corpus documents; suite manifests resolve their own corpus",
+    )
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument(
+        "--split",
+        choices=("development", "validation", "test"),
+        help="run only one source-isolated suite split; valid only for suite JSON",
+    )
     parser.add_argument(
         "--dotenv",
         type=Path,
@@ -74,9 +85,35 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.dotenv is not None
         else Settings().validate()
     )
-    ingestion = DocumentIngestor(settings).ingest(arguments.documents, namespace="bm25-baseline")
+    if arguments.dataset.suffix.lower() == ".json":
+        if arguments.documents:
+            print("suite manifest cannot be combined with explicit documents", file=sys.stderr)
+            return 2
+        try:
+            suite = load_retrieval_suite(arguments.dataset)
+        except (DatasetValidationError, OSError, ValueError) as error:
+            print(f"评测套件加载失败：{error}", file=sys.stderr)
+            return 2
+        cases = suite.cases_for_split(arguments.split) if arguments.split else suite.cases
+        documents = (
+            suite.documents_for_split(arguments.split) if arguments.split else suite.documents
+        )
+    else:
+        if arguments.split:
+            print("--split is valid only for suite manifests", file=sys.stderr)
+            return 2
+        if not arguments.documents:
+            print("JSONL benchmark requires at least one document", file=sys.stderr)
+            return 2
+        try:
+            cases = load_retrieval_benchmark(arguments.dataset)
+        except DatasetValidationError as error:
+            print(f"评测数据加载失败：{error}", file=sys.stderr)
+            return 2
+        documents = tuple(arguments.documents)
+    ingestion = DocumentIngestor(settings).ingest(documents, namespace="bm25-baseline")
     run = run_retrieval_benchmark(
-        load_retrieval_benchmark(arguments.dataset),
+        cases,
         SparseBaselineRetriever(ingestion.chunks),
         RoutingPolicy(settings),
         top_k=arguments.top_k,
