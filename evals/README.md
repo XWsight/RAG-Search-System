@@ -21,6 +21,17 @@ python scripts\validate_retrieval_suite.py evals\retrieval_suite.json `
   --contract evals\gates\retrieval-suite.json
 ```
 
+## Answer suite contract
+
+[`answer_suite.json`](answer_suite.json) 的每个 case 都是独立问题，不用同义改写扩充数量。每个样例同时冻结：输入证据、必须覆盖的原子事实、事实允许的引用、是否应拒答、category、difficulty、risk tags 和 split。严格 loader 会拒绝重复问题或证据、歧义事实、无效引用、错误拒答标签、重复风险标签和覆盖不足。
+
+```powershell
+python scripts\validate_answer_suite.py evals\answer_suite.json `
+  --contract evals\gates\answer-suite.json
+```
+
+仓库套件当前为 50 cases / 70 facts，其中 development/validation/test 为 20/15/15。公开 test 只能作为冻结回归集，不能声称为保密盲测；当前标注由仓库维护者整理，尚未完成双人独立标注和第三方裁决，因此也不能宣称为领域级金标准。真实模型运行保持手动，以避免云端费用和非确定性进入 CI。
+
 ## Annotation procedure
 
 1. 先确定真实用户意图、目标 split 和候选语料，再编写问题；不要先看系统输出。
@@ -40,6 +51,6 @@ python scripts\validate_retrieval_suite.py evals\retrieval_suite.json `
 
 ## Reporting rules
 
-每份结果必须同时报告：commit、suite ID、ground-truth digest、问题数、family 数、来源数、split、模型与切分配置、top-k、全部指标和逐题失败。不得只报告最优指标，也不得把 200 个问题写成 200 个独立事实。
+每份检索结果必须同时报告：commit、suite ID、ground-truth digest、问题数、family 数、来源数、split、模型与切分配置、top-k、全部指标和逐题失败。回答结果必须报告 commit、suite digest、case/fact 数、split、provider/model 配置、五项结构化指标和失败 case；不得把 50 个 case 描述为真实业务准确率。
 
 `retrieval-suite.json` 冻结 manifest、全部 corpus 内容摘要和覆盖矩阵；BM25 full-suite gate 冻结确定性指标下限；Hybrid gate 是需要本地模型的手动下限。更新任何契约都必须附带失败样例、人工复核和明确理由，不能只修改 gate 让 CI 变绿。

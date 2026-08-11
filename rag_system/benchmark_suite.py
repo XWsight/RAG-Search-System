@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-import re
-import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -15,7 +11,17 @@ from typing import Any
 from rag_system.benchmark import RetrievalBenchmarkCase
 from rag_system.domain import Route
 from rag_system.evaluation import DatasetValidationError
-from rag_system.json_contract import JsonContractError, decode_json_object
+from rag_system.evaluation_suite import (
+    bounded_text,
+    canonical_bundle_digest,
+    enum_value,
+    exact_fields,
+    identifier,
+    normalized_text_fingerprint,
+    positive_int,
+    read_json_object,
+    validate_frozen_contract,
+)
 
 
 _ROOT_FIELDS = frozenset(
@@ -53,7 +59,6 @@ _FAMILY_FIELDS = frozenset(
 _SPLITS = ("development", "validation", "test")
 _DIFFICULTIES = ("easy", "medium", "hard")
 _ROUTES = (Route.LOCAL.value, Route.REFUSED.value, Route.WEB.value)
-_IDENTIFIER = re.compile(r"[a-z][a-z0-9_]{2,63}\Z")
 _CONTRACT_FIELDS = frozenset(
     {
         "schema_version",
@@ -179,12 +184,7 @@ class RetrievalBenchmarkSuite:
 
 
 def load_retrieval_suite(path: str | Path) -> RetrievalBenchmarkSuite:
-    manifest_path = Path(path).resolve(strict=True)
-    try:
-        content = manifest_path.read_text(encoding="utf-8")
-        payload = decode_json_object(content)
-    except (OSError, UnicodeError, JsonContractError) as error:
-        raise DatasetValidationError(f"cannot read suite manifest: {error}") from error
+    manifest_path, payload = read_json_object(path, label="suite manifest")
 
     _exact_fields(payload, _ROOT_FIELDS, "suite")
     if payload["schema_version"] != 1:
@@ -245,24 +245,12 @@ def load_retrieval_suite(path: str | Path) -> RetrievalBenchmarkSuite:
 
 
 def validate_suite_contract(suite: RetrievalBenchmarkSuite, path: str | Path) -> None:
-    contract_path = Path(path)
-    try:
-        payload = decode_json_object(contract_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, JsonContractError) as error:
-        raise DatasetValidationError(f"cannot read suite contract: {error}") from error
-    _exact_fields(payload, _CONTRACT_FIELDS, "suite contract")
-    if payload["schema_version"] != 1:
-        raise DatasetValidationError("suite contract schema_version must be 1")
-    summary = suite.summary()
-    mismatches = [
-        field
-        for field in sorted(_CONTRACT_FIELDS - {"schema_version"})
-        if payload[field] != summary[field]
-    ]
-    if mismatches:
-        raise DatasetValidationError(
-            "suite contract mismatch: " + ", ".join(mismatches)
-        )
+    validate_frozen_contract(
+        suite.summary(),
+        path,
+        fields=_CONTRACT_FIELDS,
+        label="suite contract",
+    )
 
 
 def _requirements(value: object) -> SuiteRequirements:
@@ -455,71 +443,44 @@ def _relative_source(value: object, location: str) -> str:
 
 
 def _question_fingerprint(question: str) -> str:
-    normalized = unicodedata.normalize("NFKC", question).casefold()
-    return "".join(character for character in normalized if character.isalnum())
+    return normalized_text_fingerprint(question)
 
 
 def _bundle_digest(
     payload: Mapping[str, Any], documents: Sequence[Path], corpus_root: Path
 ) -> str:
-    corpus_hashes: dict[str, str] = {}
+    artifacts: dict[str, bytes] = {}
     for document in documents:
         source = document.relative_to(corpus_root).as_posix()
         try:
-            content = document.read_bytes()
+            artifacts[source] = document.read_bytes()
         except OSError as error:
             raise DatasetValidationError(f"cannot hash corpus source {source!r}: {error}") from error
-        corpus_hashes[source] = hashlib.sha256(content).hexdigest()
-    canonical = json.dumps(
-        {"manifest": payload, "corpus_sha256": corpus_hashes},
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+    return canonical_bundle_digest(
+        payload,
+        artifacts=artifacts,
+        artifact_field="corpus_sha256",
     )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
-def _exact_fields(value: Mapping[object, object], expected: frozenset[str], location: str) -> None:
-    raw_keys = set(value)
-    if not all(isinstance(key, str) for key in raw_keys):
-        raise DatasetValidationError(f"{location} field names must be strings")
-    keys = {key for key in raw_keys if isinstance(key, str)}
-    missing = sorted(expected - keys)
-    unknown = sorted(keys - expected)
-    if missing:
-        raise DatasetValidationError(f"{location} missing fields: {', '.join(missing)}")
-    if unknown:
-        raise DatasetValidationError(f"{location} unknown fields: {', '.join(unknown)}")
+def _exact_fields(value: Mapping[Any, Any], expected: frozenset[str], location: str) -> None:
+    exact_fields(value, expected, location=location)
 
 
 def _identifier(value: object, location: str) -> str:
-    text = _text(value, location, minimum=3, maximum=64)
-    if _IDENTIFIER.fullmatch(text) is None:
-        raise DatasetValidationError(f"{location} must use lowercase snake_case")
-    return text
+    return identifier(value, location=location)
 
 
 def _enum(value: object, allowed: Sequence[str], location: str) -> str:
-    if not isinstance(value, str) or value not in allowed:
-        raise DatasetValidationError(f"{location} must be one of: {', '.join(allowed)}")
-    return value
+    return enum_value(value, tuple(allowed), location=location)
 
 
 def _positive_int(value: object, location: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise DatasetValidationError(f"{location} must be a positive integer")
-    return value
+    return positive_int(value, location=location)
 
 
 def _text(value: object, location: str, *, minimum: int, maximum: int) -> str:
-    if not isinstance(value, str):
-        raise DatasetValidationError(f"{location} must be a string")
-    text = value.strip()
-    if not minimum <= len(text) <= maximum:
-        raise DatasetValidationError(
-            f"{location} length must be between {minimum} and {maximum} characters"
-        )
-    return text
+    return bounded_text(value, location=location, minimum=minimum, maximum=maximum)
 
 
 __all__ = [

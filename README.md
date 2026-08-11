@@ -186,11 +186,28 @@ python scripts\benchmark_retrieval.py evals\retrieval_cases.jsonl `
 结构化回答另有独立的真实模型基准，不复用检索成绩：
 
 ```powershell
+python scripts\validate_answer_suite.py evals\answer_suite.json `
+  --contract evals\gates\answer-suite.json
+```
+
+受治理的回答套件包含 50 个独立问题、70 个原子事实、35 个可回答样例和 15 个拒答样例，覆盖 13 个类别与 15 个风险标签；development/validation/test 为 20/15/15。套件摘要 `89e99234c8b10102` 会冻结完整证据、事实标注和覆盖矩阵，默认 CI 只做确定性校验，不调用云端模型。
+
+```powershell
 python scripts\benchmark_answers.py evals\answer_cases.jsonl `
   --dotenv .env `
   --quality-gate evals\gates\answer-live.json `
   --json-output reports\answers-live.json `
   --markdown-output reports\answers-live.md
+```
+
+修改生成协议或提示后，可以先在 development 分段运行完整套件；这会产生真实 API 调用与费用，因此保持手动触发：
+
+```powershell
+python scripts\benchmark_answers.py evals\answer_suite.json `
+  --split development `
+  --dotenv .env `
+  --json-output reports\answers-development.json `
+  --markdown-output reports\answers-development.md
 ```
 
 2026-08-11 的一次 4 题/8 原子事实开发运行中，结构契约、拒答、事实召回、原子结论和归因五项均为 `1.0000`。这是会受模型版本与随机性影响的手动发布冒烟结果；门禁最低值为 `0.75`，不在默认 CI 中执行，也不能外推为生产准确率。
@@ -219,6 +236,8 @@ rag_system/
   retrieval.py        # Chroma、混合检索、路由和索引持久化
   benchmark.py        # 检索指标、逐题诊断与延迟分位数
   benchmark_suite.py  # 评测家族、覆盖矩阵、来源隔离和泄漏校验
+  evaluation_suite.py # 检索/回答套件共享的严格 schema、摘要与冻结契约
+  answer_suite.py     # 结构化回答证据、事实、split 和风险覆盖治理
   quality_gate.py     # 绑定数据集的严格回归门禁
   answer_benchmark.py # 结构化回答事实、拒答、原子性与归因评测
   answer_quality_gate.py # 绑定回答数据集的手动发布门禁

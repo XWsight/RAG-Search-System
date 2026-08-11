@@ -54,6 +54,7 @@ show_error_codes = true
 files = [
   "rag_system/application.py",
   "rag_system/application_ports.py",
+  "rag_system/answer_suite.py",
   "rag_system/assets.py",
   "rag_system/benchmark_suite.py",
   "rag_system/bootstrap.py",
@@ -61,6 +62,7 @@ files = [
   "rag_system/config.py",
   "rag_system/coordination.py",
   "rag_system/domain.py",
+  "rag_system/evaluation_suite.py",
   "rag_system/file_store.py",
   "rag_system/health.py",
   "rag_system/idempotency.py",

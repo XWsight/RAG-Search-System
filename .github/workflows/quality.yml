@@ -59,6 +59,13 @@ jobs:
           --contract evals/gates/retrieval-suite.json
           --json-output reports/retrieval-suite.json
           --markdown-output reports/retrieval-suite.md
+      - name: Validate structured-answer benchmark suite
+        run: >-
+          python scripts/validate_answer_suite.py
+          evals/answer_suite.json
+          --contract evals/gates/answer-suite.json
+          --json-output reports/answer-suite.json
+          --markdown-output reports/answer-suite.md
       - name: Full deterministic retrieval baseline
         run: >-
           python scripts/benchmark_sparse.py

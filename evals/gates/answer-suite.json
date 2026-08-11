@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "suite_digest": "89e99234c8b10102",
+  "case_count": 50,
+  "category_count": 13,
+  "fact_count": 70,
+  "answerable_case_count": 35,
+  "refusal_case_count": 15,
+  "risk_tag_count": 15,
+  "cases_by_split": {
+    "development": 20,
+    "test": 15,
+    "validation": 15
+  },
+  "cases_by_difficulty": {
+    "easy": 10,
+    "hard": 15,
+    "medium": 25
+  },
+  "cases_by_category": {
+    "conflict": 3,
+    "evaluation": 2,
+    "grounding": 4,
+    "ingestion": 4,
+    "injection": 3,
+    "lifecycle": 4,
+    "operations": 3,
+    "privacy": 3,
+    "refusal": 9,
+    "reliability": 4,
+    "retrieval": 4,
+    "scaling": 3,
+    "tenancy": 4
+  }
+}

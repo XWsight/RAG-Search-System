@@ -15,13 +15,18 @@ from rag_system.answer_quality_gate import (  # noqa: E402
     evaluate_answer_quality_gate,
     load_answer_quality_gate,
 )
+from rag_system.answer_suite import load_answer_suite  # noqa: E402
 from rag_system.config import Settings  # noqa: E402
 from rag_system.providers import ZhipuChatModel  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("dataset", type=Path)
+    parser.add_argument(
+        "dataset",
+        type=Path,
+        help="Answer JSONL dataset or governed answer-suite JSON manifest.",
+    )
     parser.add_argument(
         "--dotenv",
         type=Path,
@@ -31,11 +36,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json-output", type=Path)
     parser.add_argument("--markdown-output", type=Path)
     parser.add_argument("--quality-gate", type=Path)
+    parser.add_argument(
+        "--split",
+        choices=("development", "validation", "test"),
+        help="Run one governed-suite split; unavailable for legacy JSONL datasets.",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.dataset.suffix.lower() == ".json":
+        suite = load_answer_suite(args.dataset)
+        cases = (
+            suite.cases_for_split(args.split)
+            if args.split is not None
+            else suite.benchmark_cases
+        )
+    else:
+        if args.split is not None:
+            raise SystemExit("--split requires a governed answer-suite JSON manifest")
+        cases = load_answer_benchmark(args.dataset)
     if not args.dotenv.is_file():
         raise SystemExit("evaluation environment file does not exist")
     load_dotenv(args.dotenv, override=True)
@@ -44,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     if not model.available:
         raise SystemExit("chat provider is unavailable in the explicit evaluation environment")
     try:
-        report = run_answer_benchmark(load_answer_benchmark(args.dataset), model.answer)
+        report = run_answer_benchmark(cases, model.answer)
     finally:
         model.close()
 

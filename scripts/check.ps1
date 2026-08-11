@@ -53,6 +53,11 @@ try {
         --contract evals/gates/retrieval-suite.json `
         --json-output reports/retrieval-suite.json `
         --markdown-output reports/retrieval-suite.md
+    Invoke-CheckedPython scripts/validate_answer_suite.py `
+        evals/answer_suite.json `
+        --contract evals/gates/answer-suite.json `
+        --json-output reports/answer-suite.json `
+        --markdown-output reports/answer-suite.md
     Invoke-CheckedPython scripts/benchmark_sparse.py `
         evals/retrieval_suite.json `
         --top-k 5 `

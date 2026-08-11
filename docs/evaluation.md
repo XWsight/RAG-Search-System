@@ -187,6 +187,15 @@ python scripts/calibrate_threshold.py `
 
 ## 生成与端到端质量
 
+正式回答套件 [`answer_suite.json`](../evals/answer_suite.json) 在原有回答 ground truth 上增加 category、split、difficulty 和 risk tags 治理。当前包含 50 个独立问题、70 个原子事实、35 个可回答样例和 15 个拒答样例；覆盖冲突证据、错误领域近似证据、间接提示注入、隐私边界、生命周期、可靠性和资源耗尽等 13 个类别。冻结契约摘要为 `89e99234c8b10102`：
+
+```powershell
+python scripts/validate_answer_suite.py evals/answer_suite.json `
+  --contract evals/gates/answer-suite.json
+```
+
+该命令只验证数据，不调用模型，所以进入默认 CI。真实生成运行必须显式提供 `--dotenv`；可用 `--split development|validation|test` 保持开发、选型与最终复核分离。完整 50 题云端运行有费用且受供应商版本和随机性影响，不能作为每次提交的确定性门禁。
+
 生产生成路径使用结构化 `claims + citation_ids + insufficient` 契约。独立的 [`answer_cases.jsonl`](../evals/answer_cases.jsonl) 只包含问题、证据和人工标注的原子事实，不包含模型预测。运行时直接把这些证据交给当前 Chat provider，再分别计算：
 
 - **结构契约成功率**：供应商输出通过严格 JSON、状态和当前证据注册表校验的样例比例；
