@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="description" content="RAG Studio：可追溯、隐私优先的知识检索与问答工作台。">
+    <title>RAG Studio</title>
+    <link rel="stylesheet" href="/app/assets/styles.css">
+    <script src="/app/assets/app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="知识库导航">
+        <header class="brand">
+          <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+          <div>
+            <strong>RAG Studio</strong>
+            <small>Evidence workspace</small>
+          </div>
+        </header>
+
+        <button class="primary-button create-button" id="open-create" type="button">
+          <span aria-hidden="true">＋</span> 新建知识库
+        </button>
+
+        <div class="sidebar-heading">
+          <span>知识库</span>
+          <button class="icon-button" id="refresh-bases" type="button" aria-label="刷新知识库">↻</button>
+        </div>
+        <label class="knowledge-search" for="knowledge-search">
+          <span aria-hidden="true">⌕</span>
+          <input id="knowledge-search" type="search" placeholder="搜索知识库" autocomplete="off">
+        </label>
+        <nav class="knowledge-list" id="knowledge-list" aria-live="polite"></nav>
+
+        <div class="sidebar-footer">
+          <div class="service-state">
+            <span class="status-dot" id="service-dot"></span>
+            <span id="service-label">正在连接</span>
+          </div>
+          <button class="text-button" id="change-key" type="button">更换访问密钥</button>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">可信知识问答</p>
+            <h1 id="workspace-title">选择一个知识库</h1>
+          </div>
+          <div class="topbar-actions">
+            <label class="mobile-base-picker" for="mobile-base-select">
+              <span class="sr-only">切换知识库</span>
+              <select id="mobile-base-select" aria-label="切换知识库"></select>
+            </label>
+            <span class="privacy-badge"><span aria-hidden="true">●</span> 默认仅本地检索</span>
+            <button class="secondary-button hidden" id="base-details" type="button">资料详情</button>
+            <a class="docs-link" href="/docs" target="_blank" rel="noreferrer">API 文档 ↗</a>
+          </div>
+        </header>
+
+        <div class="task-banner hidden" id="task-banner" role="status" aria-live="polite">
+          <span class="task-spinner" aria-hidden="true"></span>
+          <div><strong id="task-title">正在处理</strong><small id="task-detail"></small></div>
+        </div>
+
+        <section class="empty-state" id="empty-state">
+          <div class="empty-orbit" aria-hidden="true"><span>R</span></div>
+          <p class="eyebrow">从证据开始</p>
+          <h2>把资料变成可追溯的答案</h2>
+          <p>上传文档建立知识库。系统会融合关键词与语义检索，并为每个回答保留引用证据。</p>
+          <button class="primary-button" id="empty-create" type="button">创建第一个知识库</button>
+          <div class="feature-row" aria-label="核心能力">
+            <span>多格式文档</span><span>混合检索</span><span>引用溯源</span><span>隐私开关</span>
+          </div>
+        </section>
+
+        <section class="chat-view hidden" id="chat-view">
+          <div class="chat-meta">
+            <div class="knowledge-summary">
+              <span class="ready-pill" id="active-status">READY</span>
+              <span id="active-stats">0 个片段</span>
+            </div>
+            <div class="chat-actions">
+              <button class="secondary-button" id="clear-chat" type="button">清空对话</button>
+              <button class="danger-button" id="delete-base" type="button">删除知识库</button>
+            </div>
+          </div>
+
+          <div class="conversation" id="conversation" aria-live="polite">
+            <article class="welcome-card">
+              <p class="eyebrow">知识库已就绪</p>
+              <h2>现在可以围绕资料提问</h2>
+              <p>回答会展示检索路径、置信度和引用片段。开启云端或联网前，界面会明确显示数据边界。</p>
+            </article>
+          </div>
+
+          <div class="composer-wrap">
+            <div class="mode-controls">
+              <label class="mode-toggle" title="将检索证据与问题发送给已配置的云端模型">
+                <input id="allow-cloud" type="checkbox">
+                <span>云端生成</span>
+              </label>
+              <label class="mode-toggle" title="资料不足时将问题发送给已配置的网络搜索服务">
+                <input id="allow-web" type="checkbox">
+                <span>联网补充</span>
+              </label>
+              <label class="mode-toggle research" title="执行多查询规划与更深的证据检索">
+                <input id="deep-research" type="checkbox">
+                <span>深度研究</span>
+              </label>
+              <span class="privacy-note" id="privacy-note">内容不会发送到外部服务</span>
+            </div>
+            <form class="composer" id="question-form">
+              <label class="sr-only" for="question">输入问题</label>
+              <textarea id="question" rows="1" maxlength="2000" placeholder="基于当前知识库提问……" required></textarea>
+              <button class="send-button" id="send-question" type="submit" aria-label="发送问题">→</button>
+            </form>
+            <p class="composer-hint">Enter 发送 · Shift + Enter 换行 · 回答应结合引用核验</p>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="modal" id="key-dialog">
+      <form method="dialog" class="modal-card" id="key-form">
+        <div class="modal-mark" aria-hidden="true">R</div>
+        <p class="eyebrow">连接工作台</p>
+        <h2>输入本地访问密钥</h2>
+        <p>密钥仅保存在当前浏览器标签会话中，关闭标签后自动清除。</p>
+        <label for="api-key">API Key</label>
+        <input id="api-key" type="password" autocomplete="off" minlength="8" placeholder="粘贴 X-API-Key" required>
+        <p class="field-error" id="key-error" role="alert"></p>
+        <button class="primary-button full-button" type="submit">安全连接</button>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="create-dialog">
+      <form class="modal-card wide-card" id="create-form">
+        <div class="modal-heading">
+          <div>
+            <p class="eyebrow">新知识库</p>
+            <h2>导入你的资料</h2>
+          </div>
+          <button class="icon-button close-button" id="close-create" type="button" aria-label="关闭">×</button>
+        </div>
+        <label for="base-name">知识库名称</label>
+        <input id="base-name" type="text" maxlength="200" placeholder="例如：考研复试资料" required>
+
+        <label class="drop-zone" id="drop-zone" for="documents">
+          <span class="upload-symbol" aria-hidden="true">↑</span>
+          <strong>选择或拖入文档</strong>
+          <span>TXT、Markdown、HTML、DOCX、PDF · 最多 10 个文件</span>
+          <input id="documents" type="file" multiple accept=".txt,.md,.markdown,.html,.htm,.docx,.pdf" required>
+        </label>
+        <div class="file-list" id="file-list" aria-live="polite"></div>
+        <p class="field-error" id="create-error" role="alert"></p>
+        <div class="modal-actions">
+          <button class="secondary-button" id="cancel-create" type="button">取消</button>
+          <button class="primary-button" id="submit-create" type="submit">开始建立索引</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="details-dialog">
+      <section class="modal-card wide-card details-card">
+        <div class="modal-heading">
+          <div>
+            <p class="eyebrow">知识库资料</p>
+            <h2 id="details-title">资料详情</h2>
+          </div>
+          <button class="icon-button close-button" id="close-details" type="button" aria-label="关闭">×</button>
+        </div>
+        <div class="details-metrics" id="details-metrics"></div>
+        <div class="document-list" id="document-list"></div>
+      </section>
+    </dialog>
+
+    <dialog class="modal" id="consent-dialog">
+      <form method="dialog" class="modal-card consent-card" id="consent-form">
+        <div class="consent-symbol" aria-hidden="true">↗</div>
+        <p class="eyebrow">外部服务授权</p>
+        <h2 id="consent-title">确认开启</h2>
+        <p id="consent-description"></p>
+        <div class="consent-boundary">
+          <strong>数据边界</strong>
+          <span id="consent-boundary"></span>
+        </div>
+        <div class="modal-actions">
+          <button class="secondary-button" id="deny-consent" type="button">保持本地</button>
+          <button class="primary-button" id="grant-consent" type="submit">确认开启</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+  </body>
+</html>

@@ -11,6 +11,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, File, Form, Header, Path, Query, Request, Security, UploadFile
 from fastapi.exceptions import RequestValidationError
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
@@ -76,6 +77,7 @@ from rag_system.tenancy import (
     AuthorizationError,
     Principal,
 )
+from rag_system.web_ui import mount_web_ui
 
 
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,127})?")
@@ -254,6 +256,45 @@ def create_app(
         openapi_url="/openapi.json" if docs_enabled else None,
         lifespan=lifespan,
     )
+    mount_web_ui(app)
+
+    def custom_openapi() -> dict[str, Any]:
+        """Describe multipart documents as browser-selectable files in Swagger UI.
+
+        FastAPI emits an OpenAPI 3.1 ``contentMediaType`` schema for a list of
+        ``UploadFile`` objects.  Swagger UI currently renders that schema as a
+        text array instead of a file picker.  The widely supported ``binary``
+        format keeps the wire protocol unchanged while making the interactive
+        documentation usable.
+        """
+
+        if app.openapi_schema is not None:
+            return app.openapi_schema
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            openapi_version=app.openapi_version,
+            description=app.description,
+            routes=app.routes,
+        )
+        request_schema = (
+            schema["paths"]["/v1/knowledge-bases"]["post"]["requestBody"]["content"]
+            ["multipart/form-data"]["schema"]
+        )
+        reference = request_schema.get("$ref")
+        if isinstance(reference, str):
+            component_name = reference.rsplit("/", maxsplit=1)[-1]
+            request_schema = schema["components"]["schemas"][component_name]
+        request_schema["properties"]["files"] = {
+            "type": "array",
+            "items": {"type": "string", "format": "binary"},
+            "title": "Files",
+            "description": "Documents to index",
+        }
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = custom_openapi
 
     api_key_scheme = APIKeyHeader(
         name="X-API-Key",

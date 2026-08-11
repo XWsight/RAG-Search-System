@@ -4,7 +4,9 @@
 
 面向中文知识库的隐私优先 RAG 系统：支持安全的多格式文档导入、向量与 BM25 混合检索、RRF 融合、可选重排序、证据路由、联网补充、带引用回答和有预算上限的研究模式。
 
-仓库同时提供两个入口：适合本地体验的 Gradio 工作台，以及具备租户隔离、鉴权、后台索引任务、持久化目录、限流、指标和安全错误协议的 FastAPI 服务。`main` 保留原始 V1.0；当前增强版位于 `rag-studio` 分支。
+仓库提供三个入口：面向普通用户的同源 Web 工作台、适合本地实验的 Gradio 工作台，以及具备租户隔离、鉴权、后台索引任务、持久化目录、限流、指标和安全错误协议的 FastAPI 服务。`main` 保留原始 V1.0；当前增强版位于 `rag-studio` 分支。
+
+Web 工作台覆盖知识库创建、异步索引进度、知识库切换与删除、多轮问答、引用证据、检索路径，以及云端生成和联网搜索的请求级授权。访问密钥只保存在当前浏览器标签会话中，不会写入仓库或持久化到浏览器长期存储。
 
 > 当前生产形态是 **durable single-node**，不是多副本高可用集群。SQLite、Chroma 和上传原文必须位于同一个持久卷，API 只能运行一个 Uvicorn worker。能力边界详见[部署说明](docs/deployment.md)。
 
@@ -18,6 +20,7 @@
 | 研究模式 | 有界查询拆解、多查询检索融合、多次网络补充；无无限 ReAct 循环 |
 | 会话 | TTL、LRU、轮数与字符数上限；租户、知识库和浏览器会话三重隔离 |
 | 数据生命周期 | 原子上传、SHA-256 清单校验、持久索引复用、残缺集合重建、耐久取消意图、显式删除 |
+| 产品界面 | 同源 Web 工作台、拖放上传、任务进度、知识库管理、多轮问答、引用证据与隐私开关 |
 | 服务边界 | API Key / Bearer、reader / writer / operator、租户隔离、持久幂等、后台任务、限流 |
 | 可运维性 | liveness/readiness、隐私安全 JSON 事件、Prometheus 指标、Docker Compose、备份恢复手册 |
 | 质量 | 离线 Recall/MRR/nDCG、路由与引用指标、阈值校准、Python 3.11/3.12 CI、依赖审计 |
@@ -26,7 +29,7 @@
 
 ```mermaid
 flowchart LR
-    C["Gradio / REST client"] --> A["API boundary\nauth · roles · rate limit"]
+    C["Web app / Gradio / REST client"] --> A["API boundary\nauth · roles · rate limit"]
     A --> P["Application platform\ntenant catalog · jobs · idempotency"]
     C --> S["RAG service"]
     P --> S
@@ -115,7 +118,7 @@ python -m uvicorn api_app:app --host 127.0.0.1 --port 8000 --workers 1
 
 `ready` 验证文档存储根、Catalog 和进程内 JobManager 状态；它不探测可选模型、Chroma 查询或外部供应商。调用方仍需处理单次检索、模型下载或上游服务失败。
 
-OpenAPI 默认位于 `http://127.0.0.1:8000/docs`；生产环境可设置 `RAG_API_DOCS_ENABLED=false`。
+正式 Web 工作台位于 `http://127.0.0.1:8000/app`，根路径会自动跳转到该页面。OpenAPI 位于 `http://127.0.0.1:8000/docs`；生产环境可设置 `RAG_API_DOCS_ENABLED=false`。
 
 ## Docker 部署
 
@@ -127,6 +130,8 @@ docker compose build --pull
 docker compose up -d
 curl --fail http://127.0.0.1:8000/health/ready
 ```
+
+容器健康后，浏览器访问 `http://127.0.0.1:8000/app`。首次进入时粘贴 `.env` 中配置的租户 API Key；密钥仅在当前标签会话中保存。
 
 Compose 默认仅发布到 `127.0.0.1`，使用非 root 用户、只读容器根文件系统、最小权限、资源上限、日志轮转和 `/data` 持久卷。公网访问必须由可信反向代理终止 TLS。备份、恢复、升级、回滚、密钥轮换和删除要求见[部署说明](docs/deployment.md)与[运维手册](docs/operations.md)。
 
@@ -157,6 +162,8 @@ python scripts\benchmark_retrieval.py evals\retrieval_cases.jsonl `
 ```text
 rag_system/
   api.py              # REST 边界、鉴权、角色、限流和安全错误协议
+  web_ui.py           # 同源产品界面的安全挂载与响应头
+  web_ui/             # 知识库管理、任务进度、问答和引用展示前端
   platform.py         # 多租户资源、后台任务与数据生命周期编排
   catalog.py          # SQLite 知识库目录与状态机
   idempotency.py      # 持久化幂等 reservation

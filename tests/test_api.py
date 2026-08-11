@@ -216,6 +216,46 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(ready.status_code, 200)
         self.assertEqual(ready.json(), {"status": "ready"})
 
+    def test_openapi_describes_knowledge_base_documents_as_uploadable_files(self) -> None:
+        response = self.client.get("/openapi.json")
+        self.assertEqual(response.status_code, 200)
+        schema = response.json()
+        request_schema = (
+            schema["paths"]["/v1/knowledge-bases"]["post"]["requestBody"]["content"]
+            ["multipart/form-data"]["schema"]
+        )
+        component_name = request_schema["$ref"].rsplit("/", maxsplit=1)[-1]
+        files = schema["components"]["schemas"][component_name]["properties"]["files"]
+        self.assertEqual(files["type"], "array")
+        self.assertEqual(files["items"], {"type": "string", "format": "binary"})
+
+    def test_product_web_app_is_packaged_same_origin_and_hardened(self) -> None:
+        root = self.client.get("/", follow_redirects=False)
+        self.assertEqual(root.status_code, 307)
+        self.assertEqual(root.headers["location"], "/app")
+
+        page = self.client.get("/app")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("RAG Studio", page.text)
+        self.assertIn("外部服务授权", page.text)
+        self.assertIn("资料详情", page.text)
+        self.assertIn("/app/assets/app.js", page.text)
+        self.assertNotIn(ALL_ROLES_KEY, page.text)
+        self.assertIn("default-src 'self'", page.headers["content-security-policy"])
+        self.assertEqual(page.headers["x-frame-options"], "DENY")
+        self.assertEqual(page.headers["referrer-policy"], "no-referrer")
+
+        script = self.client.get("/app/assets/app.js")
+        stylesheet = self.client.get("/app/assets/styles.css")
+        self.assertEqual(script.status_code, 200)
+        self.assertIn("/v1/knowledge-bases", script.text)
+        self.assertIn("sessionStorage", script.text)
+        self.assertNotIn("localStorage", script.text)
+        self.assertIn("requestExternalConsent", script.text)
+        self.assertIn("navigator.clipboard.writeText", script.text)
+        self.assertEqual(stylesheet.status_code, 200)
+        self.assertIn(".app-shell", stylesheet.text)
+
     def test_unready_is_safe_503_envelope(self) -> None:
         app = create_app(
             platform=self.platform,

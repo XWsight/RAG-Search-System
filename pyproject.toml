@@ -33,6 +33,9 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["rag_system*"]
 
+[tool.setuptools.package-data]
+rag_system = ["web_ui/*.html", "web_ui/assets/*.css", "web_ui/assets/*.js"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100
