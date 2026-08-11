@@ -9,12 +9,16 @@ from dataclasses import dataclass
 from rag_system.domain import AnswerClaim, GeneratedAnswer
 
 
-_CITATION_ID = re.compile(r"^(?:L|W)[1-9]\d*$")
+CITATION_ID_PATTERN = r"^[LW][1-9]\d*$"
+MAX_CITATION_ID_CHARACTERS = 16
+MAX_ANSWER_CLAIMS = 24
+MAX_CLAIM_CHARACTERS = 2_000
+MAX_GROUNDED_ANSWER_CHARACTERS = 20_000
+
+
+_CITATION_ID = re.compile(CITATION_ID_PATTERN)
 _INLINE_CITATION = re.compile(r"\[(?:L|W)\d+\]")
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_MAX_CLAIMS = 24
-_MAX_CLAIM_CHARACTERS = 2_000
-_MAX_ANSWER_CHARACTERS = 20_000
 
 
 class GroundingContractError(ValueError):
@@ -44,7 +48,7 @@ def validate_grounded_answer(
         raise GroundingContractError("insufficient must be a boolean")
     if not isinstance(draft.claims, tuple):
         raise GroundingContractError("claims must be an immutable tuple")
-    if len(draft.claims) > _MAX_CLAIMS:
+    if len(draft.claims) > MAX_ANSWER_CLAIMS:
         raise GroundingContractError("generated answer contains too many claims")
     if draft.insufficient and draft.claims:
         raise GroundingContractError("an insufficient answer cannot contain claims")
@@ -63,7 +67,7 @@ def validate_grounded_answer(
         if not isinstance(claim.text, str):
             raise GroundingContractError("claim text must be a string")
         text = claim.text.strip()
-        if not text or len(text) > _MAX_CLAIM_CHARACTERS:
+        if not text or len(text) > MAX_CLAIM_CHARACTERS:
             raise GroundingContractError("claim text is empty or too long")
         if text != claim.text:
             raise GroundingContractError("claim text must be normalized")
@@ -76,7 +80,7 @@ def validate_grounded_answer(
             raise GroundingContractError("duplicate claims are not allowed")
         seen_claims.add(identity)
         total_characters += len(text)
-        if total_characters > _MAX_ANSWER_CHARACTERS:
+        if total_characters > MAX_GROUNDED_ANSWER_CHARACTERS:
             raise GroundingContractError("generated answer is too long")
 
         if not isinstance(claim.citation_ids, tuple) or not claim.citation_ids:
@@ -116,6 +120,34 @@ def _validated_allowed_ids(values: Sequence[str]) -> frozenset[str]:
     if len(resolved) != len(set(resolved)):
         raise GroundingContractError("allowed citation IDs must be unique")
     for value in resolved:
-        if not isinstance(value, str) or _CITATION_ID.fullmatch(value) is None:
+        if (
+            not isinstance(value, str)
+            or len(value) > MAX_CITATION_ID_CHARACTERS
+            or _CITATION_ID.fullmatch(value) is None
+        ):
             raise GroundingContractError("allowed citation ID is invalid")
     return frozenset(resolved)
+
+
+def is_citation_id(value: object) -> bool:
+    """Return whether a value satisfies the public citation identifier contract."""
+
+    return (
+        isinstance(value, str)
+        and len(value) <= MAX_CITATION_ID_CHARACTERS
+        and _CITATION_ID.fullmatch(value) is not None
+    )
+
+
+__all__ = [
+    "CITATION_ID_PATTERN",
+    "GroundingAudit",
+    "GroundingContractError",
+    "MAX_ANSWER_CLAIMS",
+    "MAX_CITATION_ID_CHARACTERS",
+    "MAX_CLAIM_CHARACTERS",
+    "MAX_GROUNDED_ANSWER_CHARACTERS",
+    "is_citation_id",
+    "render_grounded_answer",
+    "validate_grounded_answer",
+]

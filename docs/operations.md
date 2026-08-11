@@ -123,6 +123,7 @@ API 调用方密钥采用重叠轮换：
 - `RAG_MAX_JOBS` 是节点内保留的 active 与 terminal job 快照总上限；`RAG_MAX_JOBS_PER_TENANT` 对同样口径施加每租户上限。终态记录会按 TTL/LRU 回收。
 - 每租户 job 数量限制防止一个租户占满全部快照，但不提供 worker 公平调度；强 QoS 仍需要外置公平队列或独立资源池。
 - `RAG_MAX_CONCURRENT_ANSWERS` 是节点级非阻塞回答闸门；没有空槽时立即返回 `503`，不会让长请求在应用内无限排队。
+- `RAG_MAX_CONTEXT_CHARACTERS`、`RAG_ANSWER_MAX_TOKENS` 与 `RAG_QUERY_PLAN_MAX_TOKENS` 分别约束外发证据、结构化回答和查询规划预算。调整模型或 prompt 后应先运行回答质量门禁；不要只为消除截断而无上限扩大成本与延迟。
 - CPU 或内存限制变化后重新测试摄取与问答并发。OOM 会直接终止进程，重启策略不能修复容量不足。
 - 模型缓存可重新下载，不属于权威业务数据，但清理它会增加下一次冷启动或首次查询延迟。
 

@@ -7,13 +7,16 @@ from typing import Any
 
 import requests
 
+from rag_system.answer_protocol import ChatMessage, PreparedAnswerRequest
 from rag_system.config import SecretValue, Settings
 from rag_system.domain import AnswerClaim, GeneratedAnswer
-from rag_system.providers import (
+from rag_system.provider_errors import (
     ProviderAuthenticationError,
     ProviderError,
     ProviderProtocolError,
     ProviderUnavailableError,
+)
+from rag_system.providers import (
     ZhipuChatModel,
     ZhipuWebSearch,
 )
@@ -72,6 +75,52 @@ def configured_settings(*, retry_attempts: int = 2) -> Settings:
 
 
 class ZhipuChatModelTests(unittest.TestCase):
+    def test_answer_protocol_is_replaceable_without_changing_transport(self) -> None:
+        class StubProtocol:
+            def __init__(self) -> None:
+                self.prepared = False
+                self.decoded = False
+
+            def prepare(self, question, evidence):
+                self.prepared = (question, tuple(evidence)) == (
+                    "问题",
+                    (("L1", "证据"),),
+                )
+                return PreparedAnswerRequest((ChatMessage("user", "custom-wire"),), ("L1",))
+
+            def decode(self, content, allowed_citation_ids):
+                self.decoded = content == "custom-response" and tuple(
+                    allowed_citation_ids
+                ) == ("L1",)
+                return GeneratedAnswer((AnswerClaim("自定义协议结论。", ("L1",)),))
+
+            def repair_message(self):
+                return ChatMessage("system", "repair")
+
+        protocol = StubProtocol()
+        session = FakeSession(
+            FakeResponse(
+                200,
+                {"choices": [{"message": {"content": "custom-response"}}]},
+            )
+        )
+        model = ZhipuChatModel(
+            configured_settings(),
+            answer_protocol=protocol,
+            session=session,
+            sleeper=lambda _: None,
+        )
+
+        answer = model.answer("问题", [("L1", "证据")])
+
+        self.assertEqual(answer.claims[0].text, "自定义协议结论。")
+        self.assertTrue(protocol.prepared)
+        self.assertTrue(protocol.decoded)
+        self.assertEqual(
+            session.calls[0]["json"]["messages"],
+            [{"role": "user", "content": "custom-wire"}],
+        )
+
     def test_close_releases_the_http_session(self) -> None:
         session = FakeSession()
         model = ZhipuChatModel(configured_settings(), session=session)

@@ -43,9 +43,9 @@ HTTP 入口不提供 TLS；公网部署必须使用受控反向代理。上传�
 | [`loaders.py`](../rag_system/loaders.py)、[`ingestion.py`](../rag_system/ingestion.py) | 多格式安全解析、去重、确定性切分、清单和索引 ID | 向量搜索或生成 |
 | [`retrieval.py`](../rag_system/retrieval.py)、[`sparse.py`](../rag_system/sparse.py)、[`ranking.py`](../rag_system/ranking.py) | Chroma 稠密检索、BM25 稀疏检索、RRF 融合、可解释置信度和路由 | 供应商调用 |
 | [`reranking.py`](../rag_system/reranking.py) | 可选 CrossEncoder 二阶段重排及失败回退 | 默认必需依赖 |
-| [`service.py`](../rag_system/service.py)、[`research.py`](../rag_system/research.py) | 多轮查询上下文化、多查询研究模式、隐私路由、证据组装、生成和引用审计 | 租户资源所有权和磁盘布局 |
-| [`grounding.py`](../rag_system/grounding.py) | 原子结论—证据不变量、拒答状态校验和确定性文本渲染 | 判断开放域语义蕴含或事实真伪 |
-| [`providers.py`](../rag_system/providers.py)、[`web.py`](../rag_system/web.py) | 智谱协议适配、超时/重试、严格响应解析、网页结果去重与域名多样性 | 任意 URL 抓取 |
+| [`service.py`](../rag_system/service.py)、[`research.py`](../rag_system/research.py) | 多轮查询上下文化、多查询研究模式、隐私路由、证据组装、生成和引用审计 | 具体模型供应商、租户资源所有权和磁盘布局 |
+| [`answer_protocol.py`](../rag_system/answer_protocol.py)、[`grounding.py`](../rag_system/grounding.py)、[`provider_errors.py`](../rag_system/provider_errors.py) | 供应商无关的提示/证据边界、结构化回答解码、引用不变量和稳定失败契约 | HTTP、智谱字段与 UI 框架 |
+| [`providers.py`](../rag_system/providers.py)、[`web.py`](../rag_system/web.py) | 智谱 HTTP 传输、超时/重试/结束状态解析、网页结果去重与域名多样性 | 应用编排、回答 schema 的具体解释、任意 URL 抓取 |
 | [`memory.py`](../rag_system/memory.py) | TTL/LRU 有界的进程内会话历史 | 耐久会话或跨副本共享 |
 | [`observability.py`](../rag_system/observability.py)、[`metrics.py`](../rag_system/metrics.py) | 字段白名单 JSON 事件、低基数指标和关联 ID | 文档/问题正文日志或分布式追踪后端 |
 | [`bootstrap.py`](../rag_system/bootstrap.py) | 本地 UI 与生产 API 的依赖组装、严格凭据解析、启动恢复 | 运行时迁移编排 |
@@ -162,7 +162,9 @@ sequenceDiagram
 
 路由置信度不是直接照搬 Chroma 距离，也不是“两个检索器都命中就固定加分”。当前实现组合三个可解释信号：融合后第一名分数、第一名与第二名的间隔，以及稠密/稀疏检索一致性。最后一项还会乘以 BM25 词法覆盖支持度；只有通用弱词重合时不会获得完整一致性奖励。默认本地阈值为 `0.655070`，`hybrid` 只覆盖该阈值以下 95% 到阈值之间的窄区间；证据更弱时根据请求级 `allow_web` 选择联网或拒答。阈值来自标注开发集的相邻置信度中点，并由离线质量门禁防止静默回归，不能视为跨模型、跨语料通用常数。
 
-生成边界使用 [`grounding.py`](../rag_system/grounding.py) 定义的结构化证据契约。供应商只能返回 `claims[]` 与显式 `insufficient` 状态；每个 claim 是不含引用标记的原子文本和一个或多个 `citation_ids`。生成提示只允许保留直接回答问题所需的事实，普通问答以 1–6 个 claim 为软预算，硬边界仍由 schema 控制。供应商适配器先执行严格 JSON/schema 校验，应用服务再以本次证据注册表重复验证，最后才渲染兼容文本。结构化事实生成与查询规划都关闭供应商的 Thinking，并禁用随机采样；这避免推理内容挤占 JSON 输出预算，也使同一协议更稳定。适配器显式检查 `finish_reason`，长度截断、空正文及可修复 schema 错误最多进行一次不携带原始错误输出的协议重试；安全拒绝、认证和网络错误不会进入该重试，第二次失败后整体失败关闭。系统不会截短 claim 或删除非法编号来“修复”不可信回答，因为两种局部改写都可能改变结论或让它失去依据。API 保留 claim 到证据的映射，界面文本只是该结构的确定性投影。
+生成边界由 [`answer_protocol.py`](../rag_system/answer_protocol.py) 和 [`grounding.py`](../rag_system/grounding.py) 共同定义。前者负责供应商无关的提示、证据预算、严格 JSON 解码和 claim schema，后者负责领域级引用不变量与稳定渲染；智谱适配器只负责运输消息、关闭 Thinking/随机采样并解释 `finish_reason`。`ZhipuChatModel` 通过 `AnswerProtocol` 注入协议，因此新增模型适配器可以复用同一信任边界，修改 prompt/schema 也不需要改 HTTP 重试代码。供应商只能返回 `claims[]` 与显式 `insufficient` 状态；每个 claim 是不含引用标记的原子文本和一个或多个 `citation_ids`。生成提示只允许保留直接回答问题所需的事实，普通问答以 1–6 个 claim 为软预算，硬边界仍由 schema 控制。协议先执行严格 JSON/schema 校验，应用服务再以本次证据注册表重复验证，最后才渲染兼容文本。长度截断、空正文及可修复 schema 错误最多进行一次不携带原始错误输出的协议重试；安全拒绝、认证和网络错误不会进入该重试，第二次失败后整体失败关闭。系统不会截短 claim 或删除非法编号来“修复”不可信回答，因为两种局部改写都可能改变结论或让它失去依据。API 保留 claim 到证据的映射，界面文本只是该结构的确定性投影。
+
+应用服务和 HTTP 层只依赖 [`provider_errors.py`](../rag_system/provider_errors.py) 的稳定失败契约，不反向导入具体 Provider。领域与协议模块禁止引入 FastAPI、Pydantic、Requests、LangChain、Chroma 或 Gradio；[`test_architecture.py`](../tests/test_architecture.py) 会在 CI 中锁定这些依赖方向。
 
 最近最多三轮的**用户问题**会加入检索查询；此前生成的答案不会作为检索依据。会话存储受轮数、字符数、TTL 和 LRU 容量限制。`allow_cloud` 与 `allow_web` 是请求级开关；默认值均为关闭。研究模式提高多查询和外部调用预算，但仍受配置上限约束。
 

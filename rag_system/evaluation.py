@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from rag_system.domain import Route
+from rag_system.grounding import is_citation_id
 from rag_system.ranking import audit_citations
 
 
@@ -29,7 +30,6 @@ _CASE_FIELDS = frozenset(
         "citation_required",
     }
 )
-_CITATION_ID = re.compile(r"^(?:L|W)[1-9]\d*$")
 _CITATION_REFERENCE = re.compile(r"\[(?:L|W)\d+\]")
 _CLAIM_SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?])\s*|(?<=\.)\s+")
 
@@ -216,7 +216,7 @@ def evaluation_case_from_mapping(
         payload["allowed_citation_ids"], "allowed_citation_ids", location
     )
     for citation_id in allowed_citation_ids:
-        if not _CITATION_ID.fullmatch(citation_id):
+        if not is_citation_id(citation_id):
             raise DatasetValidationError(
                 f"{location}: invalid citation ID {citation_id!r}; expected L1 or W1 format"
             )

@@ -38,6 +38,12 @@ from rag_system.file_store import (
     ResourceNotFoundError,
     StorageLimitError,
 )
+from rag_system.grounding import (
+    CITATION_ID_PATTERN,
+    MAX_ANSWER_CLAIMS,
+    MAX_CITATION_ID_CHARACTERS,
+    MAX_CLAIM_CHARACTERS,
+)
 from rag_system.idempotency import (
     IdempotencyCapacityError,
     IdempotencyConflictError,
@@ -68,7 +74,7 @@ from rag_system.platform import (
     RagPlatform,
     UploadDocument,
 )
-from rag_system.providers import ProviderError
+from rag_system.provider_errors import ProviderError
 from rag_system.rate_limit import RateLimitDecision, TokenBucketRateLimiter
 from rag_system.security import DocumentValidationError
 from rag_system.tenancy import (
@@ -83,8 +89,14 @@ from rag_system.web_ui import mount_web_ui
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,127})?")
 _RESOURCE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
 _SESSION_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-_CITATION_PATTERN = r"^[LW][1-9]\d*$"
-CitationId = Annotated[str, Field(min_length=2, max_length=16, pattern=_CITATION_PATTERN)]
+CitationId = Annotated[
+    str,
+    Field(
+        min_length=2,
+        max_length=MAX_CITATION_ID_CHARACTERS,
+        pattern=CITATION_ID_PATTERN,
+    ),
+]
 _UPLOAD_READ_SIZE = 64 * 1024
 _PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 
@@ -181,14 +193,17 @@ class CitationResponse(StrictModel):
 
 
 class AnswerClaimResponse(StrictModel):
-    text: str = Field(min_length=1, max_length=2_000)
-    citation_ids: tuple[CitationId, ...] = Field(min_length=1, max_length=24)
+    text: str = Field(min_length=1, max_length=MAX_CLAIM_CHARACTERS)
+    citation_ids: tuple[CitationId, ...] = Field(
+        min_length=1,
+        max_length=MAX_ANSWER_CLAIMS,
+    )
 
 
 class AnswerResponse(StrictModel):
     answer: str = Field(max_length=200_000)
     decision: RouteResponse
-    claims: tuple[AnswerClaimResponse, ...] = Field(max_length=24)
+    claims: tuple[AnswerClaimResponse, ...] = Field(max_length=MAX_ANSWER_CLAIMS)
     citations: tuple[CitationResponse, ...]
     trace_id: str = Field(min_length=1, max_length=128)
     latency_ms: float = Field(ge=0)

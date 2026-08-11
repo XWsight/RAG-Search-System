@@ -4,21 +4,24 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from rag_system.domain import AnswerClaim, GeneratedAnswer
-from rag_system.grounding import validate_grounded_answer
+from rag_system.grounding import (
+    MAX_ANSWER_CLAIMS,
+    MAX_CITATION_ID_CHARACTERS,
+    is_citation_id,
+    validate_grounded_answer,
+)
 
 
 SCHEMA_VERSION = 1
 _CASE_FIELDS = frozenset({"case_id", "question", "evidence", "facts", "should_refuse"})
 _FACT_FIELDS = frozenset({"fact_id", "term_groups", "supporting_citation_ids"})
 _EVIDENCE_FIELDS = frozenset({"citation_id", "text"})
-_CITATION_ID = re.compile(r"^(?:L|W)[1-9]\d*$")
 
 
 class AnswerDatasetError(ValueError):
@@ -225,15 +228,21 @@ def answer_case_from_mapping(
         raise AnswerDatasetError(f"{location}: should_refuse must be a boolean")
 
     evidence_value = mapping["evidence"]
-    if not isinstance(evidence_value, list) or not 1 <= len(evidence_value) <= 24:
+    if (
+        not isinstance(evidence_value, list)
+        or not 1 <= len(evidence_value) <= MAX_ANSWER_CLAIMS
+    ):
         raise AnswerDatasetError(f"{location}: evidence must contain 1 to 24 items")
     evidence: list[tuple[str, str]] = []
     for index, item in enumerate(evidence_value, start=1):
         item_mapping = _exact_mapping(item, _EVIDENCE_FIELDS, f"{location}.evidence[{index}]")
         citation_id = _bounded_string(
-            item_mapping["citation_id"], "citation_id", location, 16
+            item_mapping["citation_id"],
+            "citation_id",
+            location,
+            MAX_CITATION_ID_CHARACTERS,
         )
-        if _CITATION_ID.fullmatch(citation_id) is None:
+        if not is_citation_id(citation_id):
             raise AnswerDatasetError(f"{location}: evidence citation ID is invalid")
         text = _bounded_string(item_mapping["text"], "text", location, 20_000)
         evidence.append((citation_id, text))
@@ -242,7 +251,7 @@ def answer_case_from_mapping(
         raise AnswerDatasetError(f"{location}: evidence citation IDs must be unique")
 
     facts_value = mapping["facts"]
-    if not isinstance(facts_value, list) or len(facts_value) > 24:
+    if not isinstance(facts_value, list) or len(facts_value) > MAX_ANSWER_CLAIMS:
         raise AnswerDatasetError(f"{location}: facts must be an array with at most 24 items")
     facts = tuple(
         _fact_from_mapping(item, evidence_ids, f"{location}.facts[{index}]")
@@ -377,7 +386,12 @@ def _fact_from_mapping(
     if not isinstance(supporting_value, list) or not supporting_value:
         raise AnswerDatasetError(f"{location}: supporting citations cannot be empty")
     supporting = tuple(
-        _bounded_string(item, "supporting citation", location, 16)
+        _bounded_string(
+            item,
+            "supporting citation",
+            location,
+            MAX_CITATION_ID_CHARACTERS,
+        )
         for item in supporting_value
     )
     if len(supporting) != len(set(supporting)) or not set(supporting) <= set(evidence_ids):

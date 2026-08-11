@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from types import MappingProxyType
 
 
 class Route(StrEnum):
@@ -113,4 +115,15 @@ class AnswerResult:
     hits: tuple[SearchHit, ...] = ()
     trace_id: str = ""
     latency_ms: float = 0.0
-    diagnostics: dict[str, float | int | str] = field(default_factory=dict)
+    diagnostics: Mapping[str, float | int | str] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.diagnostics, Mapping):
+            raise TypeError("diagnostics must be a mapping")
+        object.__setattr__(
+            self,
+            "diagnostics",
+            MappingProxyType(dict(self.diagnostics)),
+        )

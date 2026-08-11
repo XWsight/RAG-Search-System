@@ -34,6 +34,7 @@ python -m pip install -r requirements.txt -r requirements-dev.txt
 - 新的内存缓存、队列、metric label 或历史记录必须有 TTL/容量/基数上限。
 - 文件写入与删除必须使用验证后的精确路径，拒绝符号链接、重解析点和路径穿越。
 - 外部调用必须有超时、有限重试、严格响应解析和隐私开关。不要根据模型/文档内容执行代码或任意工具。
+- `domain`、`ports`、`grounding` 与回答协议必须保持框架无关；应用和 HTTP 层不得导入具体 Provider。扩展新模型时复用 `AnswerProtocol` 与 `provider_errors`，不要复制 prompt、引用校验或重试状态机。
 - 不捕获宽泛异常后静默成功；如需降级，应保留非敏感诊断 code 并测试该路径。
 
 ## 测试

@@ -130,6 +130,12 @@ class Settings:
     max_context_characters: int = field(
         default_factory=lambda: _env_int("RAG_MAX_CONTEXT_CHARACTERS", 18_000)
     )
+    answer_max_tokens: int = field(
+        default_factory=lambda: _env_int("RAG_ANSWER_MAX_TOKENS", 4_096)
+    )
+    query_plan_max_tokens: int = field(
+        default_factory=lambda: _env_int("RAG_QUERY_PLAN_MAX_TOKENS", 512)
+    )
     connect_timeout_seconds: float = field(
         default_factory=lambda: _env_float("RAG_CONNECT_TIMEOUT", 10.0)
     )
@@ -234,6 +240,10 @@ class Settings:
             raise ValueError("question character limit must be between 1 and 10000")
         if not 1_000 <= self.max_context_characters <= 200_000:
             raise ValueError("context character limit must be between 1000 and 200000")
+        if not 512 <= self.answer_max_tokens <= 32_768:
+            raise ValueError("answer token limit must be between 512 and 32768")
+        if not 64 <= self.query_plan_max_tokens <= 4_096:
+            raise ValueError("query plan token limit must be between 64 and 4096")
         if (
             not math.isfinite(self.rate_limit_per_second)
             or not math.isfinite(self.rate_limit_capacity)

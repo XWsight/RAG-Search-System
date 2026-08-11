@@ -41,6 +41,10 @@ class ConfigurationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             replace(settings, max_context_characters=999).validate()
         with self.assertRaises(ValueError):
+            replace(settings, answer_max_tokens=511).validate()
+        with self.assertRaises(ValueError):
+            replace(settings, query_plan_max_tokens=4_097).validate()
+        with self.assertRaises(ValueError):
             replace(settings, max_concurrent_answers=0).validate()
         for ratio in (0.49, 1.0, float("nan")):
             with self.subTest(ratio=ratio), self.assertRaises(ValueError):

@@ -13,7 +13,7 @@ from rag_system.domain import (
     SearchHit,
     WebSearchResult,
 )
-from rag_system.providers import ProviderUnavailableError
+from rag_system.provider_errors import ProviderUnavailableError
 from rag_system.service import RagService
 
 

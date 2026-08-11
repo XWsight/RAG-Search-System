@@ -198,6 +198,9 @@ rag_system/
   quality_gate.py     # 绑定数据集的严格回归门禁
   answer_benchmark.py # 结构化回答事实、拒答、原子性与归因评测
   answer_quality_gate.py # 绑定回答数据集的手动发布门禁
+  answer_protocol.py  # 可替换的提示、证据边界与严格输出解码协议
+  provider_errors.py  # 应用层与外部服务适配器共享的稳定失败契约
+  json_contract.py    # 拒绝重复键和非有限值的严格 JSON 边界
   service.py          # 问答、联网、研究模式、引用和会话编排
   grounding.py        # 原子结论、证据归因校验与稳定渲染
   metrics.py          # 有界 Prometheus 指标
