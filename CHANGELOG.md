@@ -6,9 +6,7 @@
 
 ## [Unreleased]
 
-暂无。
-
-## [2.0.0] - 2026-08-11
+> 当前增强版仍处于开发阶段，尚未创建正式 Release 或版本 Tag。
 
 ### Added
 
@@ -35,5 +33,4 @@
 - API 错误与结构化日志不回显密钥、租户标识、问题正文、文档正文或供应商响应体。
 - 生产存储根使用单实例系统锁，阻止多个本地写进程同时操作 SQLite 与 Chroma。
 
-[Unreleased]: https://github.com/XWsight/RAG-Search-System/compare/v2.0.0...rag-studio
-[2.0.0]: https://github.com/XWsight/RAG-Search-System/compare/7ea6c4249d80c86ded88dcae98e0d409d8ba35d1...v2.0.0
+[Unreleased]: https://github.com/XWsight/RAG-Search-System/compare/7ea6c4249d80c86ded88dcae98e0d409d8ba35d1...rag-studio
