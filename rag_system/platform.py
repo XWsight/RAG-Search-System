@@ -40,12 +40,13 @@ from rag_system.idempotency import (
     IdempotencyConflictError,
     IdempotencyUnavailableError,
 )
-from rag_system.jobs import (
+from rag_system.job_contracts import (
     CancellationToken,
     JobError,
     JobId,
     JobNotFoundError,
     JobSnapshot,
+    JobStatus,
 )
 from rag_system.indexing import KnowledgeBaseIndexer
 from rag_system.metrics import OperationalMetrics, create_operational_metrics
@@ -154,11 +155,17 @@ class RagPlatform:
             current_job = self._job_for_resource(principal, record.resource_id)
             if current_job is None:
                 try:
-                    self.jobs.get(
+                    bound_snapshot = self.jobs.get(
                         principal.tenant_id.value,
                         JobId(bound_job_id),
                     )
-                    current_job = JobId(bound_job_id)
+                    if (
+                        record.status is KnowledgeBaseStatus.READY
+                        and bound_snapshot.status is not JobStatus.SUCCEEDED
+                    ):
+                        current_job = None
+                    else:
+                        current_job = JobId(bound_job_id)
                 except JobNotFoundError:
                     current_job = None
             if (

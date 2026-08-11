@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from rag_system.jobs import JobId
+from rag_system.job_contracts import JobId
 
 
 class ResourceLockPool:

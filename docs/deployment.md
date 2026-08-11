@@ -56,13 +56,13 @@ curl -H 'X-API-Key: <调用方密钥>' http://127.0.0.1:8000/v1/knowledge-bases
 
 `GET /health/live` 与 `GET /health/ready` 不返回敏感信息。`GET /metrics` 需要带 `operator` 角色的凭据。
 
-`ready` 检查本地文档存储根、Catalog 和进程内 JobManager 状态，不加载 Embedding、不执行 Chroma 查询，也不探测智谱或 Hugging Face。它适合阻止本地持久层或任务管理器明显故障的实例接流量，但不能代替代表性业务探针。
+`ready` 检查本地文档存储根、Catalog、向量目录、任务执行器和耐久 job 快照库，不加载 Embedding、不执行 Chroma 查询，也不探测智谱或 Hugging Face。它适合阻止本地持久层或任务管理器明显故障的实例接流量，但不能代替代表性业务探针。
 
 ## 容器安全与运行边界
 
 - 进程固定以 UID/GID `10001:10001` 运行，不拥有 Linux capabilities，并启用 `no-new-privileges`。
 - 容器根文件系统只读；仅 `/data` 和受限的 `/tmp` 可写。
-- `/data` 包含目录型文档存储、`catalog.sqlite3`、Chroma 数据和模型缓存。
+- `/data` 包含目录型文档存储、`catalog.sqlite3`、`idempotency.sqlite3`、`jobs.sqlite3`、Chroma 数据和模型缓存。
 - Chroma 只允许作为当前进程的嵌入式 `PersistentClient` 使用，Embedding 实现和模型标识只能由受信部署配置固定。禁止启动或暴露 Chroma Server、使用 `chromadb.HttpClient`、发布或代理 Chroma 网络端口，或把不可信 collection/卷挂载到 `/data/vector`。这些限制是当前临时依赖安全例外的强制条件，详情见[安全设计](security.md#依赖与供应链)与[机器校验记录](../security/dependency-exceptions.json)。
 - Compose 设置 CPU、内存、进程数、文件描述符和日志轮转边界。默认 4 GiB 只是起点，不能替代压测。
 - API 固定一个 Uvicorn worker。增加 worker 数不会把本地状态变成分布式状态，反而会破坏任务、限流和存储的一致性。

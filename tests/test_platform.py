@@ -29,6 +29,8 @@ from rag_system.ingestion import IngestionResult
 from rag_system.idempotency import IdempotencyStore
 from rag_system.idempotency import IdempotencyConflictError
 from rag_system.jobs import JobManager, JobNotFoundError, JobStatus
+from rag_system.job_contracts import JobId, JobSnapshot
+from rag_system.job_store import SqliteJobSnapshotStore
 from rag_system.platform import (
     KnowledgeBaseNotReadyError,
     PlatformIntegrityError,
@@ -153,9 +155,12 @@ class PlatformTests(unittest.TestCase):
         return record
 
     def _wait_for_job(self, job_id: str):
+        return self._wait_for_job_on(self.platform, job_id)
+
+    def _wait_for_job_on(self, platform: RagPlatform, job_id: str):
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
-            snapshot = self.platform.get_job(self.tenant_a, job_id)
+            snapshot = platform.get_job(self.tenant_a, job_id)
             if snapshot.status.terminal:
                 return snapshot
             time.sleep(0.01)
@@ -771,6 +776,66 @@ class PlatformTests(unittest.TestCase):
         else:
             self.fail("recovered status job did not complete")
         self.assertEqual(snapshot.status, JobStatus.SUCCEEDED)
+
+    def test_ready_replay_replaces_an_interrupted_archived_job(self) -> None:
+        record = self._create_ready()
+        reservation_id = record.idempotency_reservation_id
+        self.assertIsNotNone(reservation_id)
+        with closing(sqlite3.connect(self.root / "idempotency.sqlite3")) as connection:
+            bound_job_id = connection.execute(
+                "SELECT job_id FROM idempotency_entries WHERE reservation_id = ?",
+                (reservation_id,),
+            ).fetchone()[0]
+
+        archive = SqliteJobSnapshotStore(self.root / "jobs.sqlite3")
+        now = time.time()
+        archive.put(
+            self.tenant_a.tenant_id.value,
+            JobSnapshot(
+                job_id=JobId(bound_job_id),
+                status=JobStatus.FAILED,
+                created_at=now - 2,
+                updated_at=now - 1,
+                started_at=now - 2,
+                finished_at=now - 1,
+                error_code="worker_restarted",
+                error_message="job execution was interrupted by a process restart",
+            ),
+        )
+        restarted_jobs = JobManager(
+            max_workers=2,
+            max_jobs=16,
+            ttl_seconds=30,
+            snapshot_store=archive,
+        )
+        restarted = RagPlatform(
+            settings=self.settings,
+            service=FakeService(),
+            catalog=KnowledgeBaseCatalog(self.root / "catalog.sqlite3"),
+            file_store=TenantFileStore(
+                self.root / "documents",
+                max_file_bytes=10_000,
+                max_total_bytes=50_000,
+                max_files_per_tenant=20,
+            ),
+            jobs=restarted_jobs,
+            idempotency=IdempotencyStore(self.root / "idempotency.sqlite3"),
+        )
+        self.addCleanup(restarted.close)
+
+        replay = restarted.create_knowledge_base(
+            self.tenant_a,
+            display_name="Engineering handbook",
+            documents=(UploadDocument("guide.txt", b"RAG evidence"),),
+            idempotency_key="create-engineering-handbook",
+        )
+
+        self.assertTrue(replay.replayed)
+        self.assertNotEqual(replay.job_id.value, bound_job_id)
+        self.assertEqual(
+            self._wait_for_job_on(restarted, replay.job_id.value).status,
+            JobStatus.SUCCEEDED,
+        )
 
     def test_idempotency_key_cannot_be_reused_for_different_content(self) -> None:
         self.platform.create_knowledge_base(

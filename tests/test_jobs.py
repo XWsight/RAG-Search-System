@@ -6,6 +6,7 @@ import unittest
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from typing import Any
 
+from rag_system.job_contracts import JobId, JobSnapshot, JobStorageError
 from rag_system.jobs import (
     JobCapacityError,
     JobManager,
@@ -52,6 +53,29 @@ class SequentialIdFactory:
     def __call__(self) -> str:
         self.value += 1
         return f"job-{self.value}"
+
+
+class DegradingSnapshotStore:
+    def __init__(self) -> None:
+        self.snapshot: JobSnapshot | None = None
+        self.fail_writes = False
+
+    def put(self, tenant_id: str, snapshot: JobSnapshot) -> None:
+        if self.fail_writes:
+            raise JobStorageError("unavailable")
+        self.snapshot = snapshot
+
+    def get(self, tenant_id: str, job_id: JobId | str) -> JobSnapshot:
+        if self.snapshot is None:
+            raise JobStorageError("unavailable")
+        return self.snapshot
+
+    def delete(self, tenant_id: str, job_id: JobId | str) -> bool:
+        self.snapshot = None
+        return True
+
+    def healthcheck(self) -> bool:
+        return True
 
 
 class JobManagerTests(unittest.TestCase):
@@ -292,6 +316,22 @@ class JobManagerTests(unittest.TestCase):
         self.assertEqual(manager.get("t", job_id).status, JobStatus.CANCELLED)
         with self.assertRaises(JobManagerShutdownError):
             manager.submit("t", lambda token: {"ok": True}, idempotency_key="two")
+
+    def test_archive_failure_does_not_prevent_executor_shutdown(self) -> None:
+        store = DegradingSnapshotStore()
+        manager, executor = self.make_manager(snapshot_store=store)
+        job_id = manager.submit(
+            "t",
+            lambda token: {"ok": True},
+            idempotency_key="one",
+        )
+        store.fail_writes = True
+
+        manager.shutdown(wait=False, cancel_pending=True)
+
+        self.assertTrue(executor.shutdown_called)
+        self.assertEqual(manager.get("t", job_id).status, JobStatus.CANCELLED)
+        self.assertFalse(manager.healthcheck())
 
     def test_configuration_and_input_validation(self) -> None:
         for options in (

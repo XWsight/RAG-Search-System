@@ -15,7 +15,7 @@ from rag_system.catalog import (
     KnowledgeBaseStatus,
 )
 from rag_system.file_store import FileStoreError
-from rag_system.jobs import CancellationToken, JobCancelledError
+from rag_system.job_contracts import CancellationToken, JobCancelledError
 from rag_system.metrics import OperationalMetrics
 from rag_system.security import DocumentValidationError
 from rag_system.tenancy import Principal

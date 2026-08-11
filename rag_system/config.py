@@ -147,6 +147,12 @@ class Settings:
         default_factory=lambda: _env_int("RAG_MAX_JOBS_PER_TENANT", 32)
     )
     job_ttl_seconds: int = field(default_factory=lambda: _env_int("RAG_JOB_TTL", 3_600))
+    job_history_ttl_seconds: int = field(
+        default_factory=lambda: _env_int("RAG_JOB_HISTORY_TTL", 7 * 24 * 60 * 60)
+    )
+    job_history_max_per_tenant: int = field(
+        default_factory=lambda: _env_int("RAG_JOB_HISTORY_MAX_PER_TENANT", 10_000)
+    )
     max_concurrent_answers: int = field(
         default_factory=lambda: _env_int("RAG_MAX_CONCURRENT_ANSWERS", 4)
     )
@@ -233,6 +239,10 @@ class Settings:
             or self.max_jobs < self.job_workers
             or not 1 <= self.max_jobs_per_tenant <= self.max_jobs
             or self.job_ttl_seconds < 1
+            or self.job_history_ttl_seconds < max(60, self.job_ttl_seconds)
+            or not self.max_jobs_per_tenant
+            <= self.job_history_max_per_tenant
+            <= 1_000_000
             or not 1 <= self.max_concurrent_answers <= 128
         ):
             raise ValueError("invalid concurrency or background job limits")

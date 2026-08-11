@@ -15,7 +15,7 @@ from rag_system.catalog import (
 from rag_system.domain import AnswerRequest, AnswerResult, IndexRef
 from rag_system.idempotency import IdempotencyReservation
 from rag_system.ingestion import IngestionResult
-from rag_system.jobs import CancellationToken, JobId, JobSnapshot
+from rag_system.job_contracts import CancellationToken, JobId, JobSnapshot
 from rag_system.ports import Retriever
 from rag_system.tenancy import Principal
 

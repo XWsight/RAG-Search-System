@@ -13,7 +13,7 @@ docker compose exec api sh -c 'du -sh /data/* 2>/dev/null || true'
 ```
 
 - `live` 只说明进程能够响应。
-- `ready` 表示本地文档存储根、Catalog 与进程内 JobManager 可用，可用于基础流量门控；它不验证 Embedding/Chroma 查询或外部供应商，仍需独立的代表性业务探针。
+- `ready` 表示本地文档存储根、Catalog、向量目录、任务执行器与耐久 job 快照库可用，可用于基础流量门控；它不验证 Embedding/Chroma 查询或外部供应商，仍需独立的代表性业务探针。
 - `/metrics` 需要 `operator` 凭据；监控采集器只能获得该最小权限密钥，且不得把响应或请求头写入日志。
 - 应告警的最低集合包括：持续不就绪、5xx 比例、请求延迟、任务失败/积压、长时间停留的 `CANCELLING`、限流次数、磁盘剩余量、容器重启和备份陈旧时间。
 
@@ -73,7 +73,7 @@ RAG_DATA_VOLUME=rag-studio-data-restore docker compose up -d
 curl --fail http://127.0.0.1:8000/health/ready
 ```
 
-恢复后用只读请求核对租户边界、知识库数量和抽样检索，再允许写入。对于启动配置中已知的租户，恢复会重新提交 `PENDING`/`INDEXING`，并把快照中的 `CANCELLING` 收敛为 `FAILED`/`index_cancelled`；原 job ID 不会恢复。确认恢复有效之前，保留原卷不动。归档只能来自可信来源；不要解压未经验证的外部归档。
+恢复后用只读请求核对租户边界、知识库数量和抽样检索，再允许写入。启动先把 `jobs.sqlite3` 中未终态的旧执行快照标为 `FAILED`/`worker_restarted`；随后对已知租户重新提交 `PENDING`/`INDEXING`，并把 Catalog 中的 `CANCELLING` 收敛为 `FAILED`/`index_cancelled`。旧 job ID 在归档保留期内仍可查询，但旧 worker 不会恢复执行。确认恢复有效之前，保留原卷不动。归档只能来自可信来源；不要解压未经验证的外部归档。
 
 PowerShell 中可用 `Get-FileHash -Algorithm SHA256 <文件>` 校验，并用 `$env:RAG_DATA_VOLUME='rag-studio-data-restore'` 设置本次 Compose 进程的卷名。
 
@@ -111,7 +111,7 @@ API 调用方密钥采用重叠轮换：
 
 发出信号后，尚可从执行器撤销的排队 job 会直接变为 `cancelled`；运行中 job 先变为 `cancelling`，直到 worker 在检查点退出后才成为 `cancelled` 并释放任务容量。Catalog 会尽力立即把知识库收敛为 `FAILED`/`index_cancelled`，因此知识库可能已经是 `FAILED`，而 worker job 仍是 `cancelling`。如果该终态写入失败或进程中断，耐久 `CANCELLING` 会保留；下一次启动或同一创建请求的幂等重放会完成收敛，不会重新提交索引。重放会返回新的可轮询 job ID。
 
-如果取消到达时知识库已经耐久 `READY`，请求已经太迟，Catalog 不会回退。尚未从 worker 返回的 job 可能短暂显示 `cancelling`，但完成结果获胜，最终状态为 `succeeded`。job 快照和 ID 始终是进程内状态；重启后旧 job ID 失效，即使对应的知识库取消意图已安全收敛。
+如果取消到达时知识库已经耐久 `READY`，请求已经太迟，Catalog 不会回退。尚未从 worker 返回的 job 可能短暂显示 `cancelling`，但完成结果获胜，最终状态为 `succeeded`。job 快照和 ID 会写入有界 SQLite 归档；重启后旧 ID 在保留期内仍可查询，但不会恢复旧 worker。若 READY 资源的幂等绑定仍指向一条中断快照，重放会创建成功状态 job 并原子修复绑定。
 
 ## 容量与性能规划
 
@@ -120,7 +120,7 @@ API 调用方密钥采用重叠轮换：
 - 用代表性语料做基准导入，记录导入前后 `/data` 增量、峰值内存、耗时与查询延迟。
 - 以实际高水位为基线，预留重建索引、临时文件和至少 20% 的磁盘余量。
 - `RAG_JOB_WORKERS` 会提高并发索引的 CPU 与内存峰值；它不能超过压测确认的安全值。
-- `RAG_MAX_JOBS` 是节点内保留的 active 与 terminal job 快照总上限；`RAG_MAX_JOBS_PER_TENANT` 对同样口径施加每租户上限。终态记录会按 TTL/LRU 回收。
+- `RAG_MAX_JOBS` 是节点内存中保留的 active 与 terminal job 总上限；`RAG_MAX_JOBS_PER_TENANT` 对同样口径施加每租户上限，终态记录按 `RAG_JOB_TTL`/LRU 回收。`RAG_JOB_HISTORY_TTL` 与 `RAG_JOB_HISTORY_MAX_PER_TENANT` 单独限制 `jobs.sqlite3` 中更长期的终态归档。
 - 每租户 job 数量限制防止一个租户占满全部快照，但不提供 worker 公平调度；强 QoS 仍需要外置公平队列或独立资源池。
 - `RAG_MAX_CONCURRENT_ANSWERS` 是节点级非阻塞回答闸门；没有空槽时立即返回 `503`，不会让长请求在应用内无限排队。
 - `RAG_MAX_CONTEXT_CHARACTERS`、`RAG_ANSWER_MAX_TOKENS` 与 `RAG_QUERY_PLAN_MAX_TOKENS` 分别约束外发证据、结构化回答和查询规划预算。调整模型或 prompt 后应先运行回答质量门禁；不要只为消除截断而无上限扩大成本与延迟。
@@ -155,7 +155,7 @@ docker compose logs --tail=300 api
 
 ### 磁盘耗尽
 
-先停止新的导入，定位 `/data` 各目录和容器日志占用。可以在服务停止后清理可再下载的模型缓存，但不要手工删除 `vector`、`documents` 或 `catalog.sqlite3` 的一部分；三者必须保持一致。扩容或迁移后再恢复写入。
+先停止新的导入，定位 `/data` 各目录和容器日志占用。可以在服务停止后清理可再下载的模型缓存，但不要手工删除 `vector`、`documents`、`catalog.sqlite3`、`idempotency.sqlite3` 或 `jobs.sqlite3` 的一部分；这些状态必须作为完整恢复单元处理。扩容或迁移后再恢复写入。
 
 ## 数据删除与退役
 

@@ -23,6 +23,8 @@ class ConfigurationTests(unittest.TestCase):
         self.assertFalse(settings.persist_data)
         self.assertGreater(settings.chunk_size, settings.chunk_overlap)
         self.assertGreaterEqual(settings.max_jobs, settings.job_workers)
+        self.assertGreater(settings.job_history_ttl_seconds, settings.job_ttl_seconds)
+        self.assertGreaterEqual(settings.job_history_max_per_tenant, settings.max_jobs)
 
     def test_invalid_chunking_and_url_are_rejected(self) -> None:
         settings = Settings()
@@ -46,6 +48,20 @@ class ConfigurationTests(unittest.TestCase):
             replace(settings, query_plan_max_tokens=4_097).validate()
         with self.assertRaises(ValueError):
             replace(settings, max_concurrent_answers=0).validate()
+        with self.assertRaises(ValueError):
+            replace(settings, job_history_ttl_seconds=59).validate()
+        with self.assertRaises(ValueError):
+            replace(
+                settings,
+                job_history_ttl_seconds=settings.job_ttl_seconds - 1,
+            ).validate()
+        with self.assertRaises(ValueError):
+            replace(settings, job_history_max_per_tenant=0).validate()
+        with self.assertRaises(ValueError):
+            replace(
+                settings,
+                job_history_max_per_tenant=settings.max_jobs_per_tenant - 1,
+            ).validate()
         for ratio in (0.49, 1.0, float("nan")):
             with self.subTest(ratio=ratio), self.assertRaises(ValueError):
                 replace(settings, hybrid_confidence_ratio=ratio).validate()

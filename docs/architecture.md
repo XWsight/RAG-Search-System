@@ -8,7 +8,7 @@
 - 默认不把问题或证据发送到云端；调用方必须逐次允许云生成和联网搜索。
 - 建库采用异步任务，问答采用同步请求，并为两条路径设置显式资源上限。
 - 检索、路由、生成和引用是可替换模块，而 HTTP、存储和供应商协议不会侵入领域对象。
-- 单进程重启后可以从原始文档、SQLite 目录和持久化 Chroma 集合恢复知识库；`PENDING`/`INDEXING` 会重新提交，`CANCELLING` 会终态化，但进程内 job 快照和 ID 不会恢复。
+- 单进程重启后可以从原始文档、SQLite 目录和持久化 Chroma 集合恢复知识库；`PENDING`/`INDEXING` 会重新提交，`CANCELLING` 会终态化，旧 worker 不会恢复执行，但有界 job 快照和 ID 会保留为可查询历史。
 
 ## 上下文与信任边界
 
@@ -21,6 +21,7 @@ flowchart LR
     Platform --> Catalog["SQLite 目录与幂等表"]
     Platform --> Files["租户文档目录"]
     Platform --> Jobs["进程内有界任务池"]
+    Jobs --> JobHistory["SQLite job 快照归档"]
     Service --> Index["Chroma + BM25 + 可选 Reranker"]
     Service --> Memory["进程内会话记忆"]
     Service -->|"显式 opt-in"| Zhipu["智谱 Chat / Web Search API"]
@@ -42,7 +43,7 @@ HTTP 入口不提供 TLS；公网部署必须使用受控反向代理。上传�
 | [`catalog.py`](../rag_system/catalog.py) | SQLite schema v3 中租户范围的知识库状态机、耐久取消意图与文档清单 | 文档正文、向量或耐久任务执行日志 |
 | [`idempotency.py`](../rag_system/idempotency.py) | SQLite 中按租户、操作和 key 隔离的创建请求预留与结果绑定 | 任务结果持久化 |
 | [`file_store.py`](../rag_system/file_store.py) | 有界、不可穿越、拒绝链接/重解析点的租户文件保存、解析和精确删除 | 文档格式解析 |
-| [`jobs.py`](../rag_system/jobs.py) | 有界线程池、租户隔离的任务快照、幂等提交和协作取消 | 跨进程队列或耐久任务日志 |
+| [`job_contracts.py`](../rag_system/job_contracts.py)、[`jobs.py`](../rag_system/jobs.py)、[`job_store.py`](../rag_system/job_store.py) | 框架无关任务契约、有界线程池、租户隔离执行、协作取消，以及 SQLite 中有界的状态/结果快照归档 | 跨进程任务分发、恢复旧 Python callable 或分布式公平队列 |
 | [`loaders.py`](../rag_system/loaders.py)、[`ingestion.py`](../rag_system/ingestion.py) | 多格式安全解析、去重、确定性切分、清单和索引 ID | 向量搜索或生成 |
 | [`retrieval.py`](../rag_system/retrieval.py)、[`sparse.py`](../rag_system/sparse.py)、[`ranking.py`](../rag_system/ranking.py) | Chroma 稠密检索、BM25 稀疏检索、RRF 融合、可解释置信度和路由 | 供应商调用 |
 | [`reranking.py`](../rag_system/reranking.py) | 可选 CrossEncoder 二阶段重排及失败回退 | 默认必需依赖 |
@@ -110,7 +111,7 @@ sequenceDiagram
     end
 ```
 
-Catalog 的 `CANCELLING` 与 job 的 `cancelling` 含义不同：前者是 schema v3 中的耐久知识库取消意图，后者只是当前进程的执行快照。正常路径会在发出信号后尽力把知识库立即写成 `FAILED`/`index_cancelled`，但运行中的 worker 在真正退出前仍占用任务容量。如果终态写入失败或进程中断，启动恢复不会重新提交该知识库；同一创建请求的幂等重放也会把没有 live job 的残留 `CANCELLING` 收敛为 `FAILED`/`index_cancelled`，并轮换成可轮询的新 job ID。
+Catalog 的 `CANCELLING` 与 job 的 `cancelling` 含义不同：前者是 schema v3 中的耐久知识库取消意图，后者是当前进程的执行状态，同时会归档到 job 快照库。正常路径会在发出信号后尽力把知识库立即写成 `FAILED`/`index_cancelled`，但运行中的 worker 在真正退出前仍占用任务容量。如果终态写入失败或进程中断，启动恢复不会重新提交该知识库；同一创建请求的幂等重放也会把残留 `CANCELLING` 收敛为 `FAILED`/`index_cancelled`，并在需要时轮换成新的可轮询 job。
 
 `READY` 是不可被取消覆盖的 durable commit point。取消到达时若 Catalog 已经是 `READY`，平台不会写入知识库 `CANCELLING`；它仍可向尚未返回的进程内 job 发出信号，因此客户端可能短暂看到 job `cancelling`，但提交成功的任务最终为 `succeeded`，知识库继续保持 `READY`。
 
@@ -185,6 +186,7 @@ sequenceDiagram
 <storage-root>/
 ├── catalog.sqlite3       # schema v3：知识库状态、耐久取消意图与文档清单
 ├── idempotency.sqlite3   # 创建请求预留与结果绑定
+├── jobs.sqlite3          # 有界、租户隔离的 job 状态与结果快照归档
 ├── .rag-studio.instance  # 单节点进程独占锁文件
 ├── documents/            # tenant-<sha256>/<document-resource>/<filename>
 └── vector/               # Chroma 持久集合
@@ -197,7 +199,8 @@ Catalog 以 SQLite `user_version=3` 标识当前 schema。全新空存储会直�
 | 原始文档、目录记录、幂等记录、Chroma 集合 | 是 | 从卷读取；索引缓存缺失时按清单校验文档并重开/重建 |
 | `PENDING`/`INDEXING` 知识库状态 | 是 | 启动时按配置中已知租户重新提交任务 |
 | `CANCELLING` 知识库状态 | 是 | 不重新提交索引；启动时收敛为 `FAILED`，错误码为 `index_cancelled` |
-| 任务线程、任务快照和 resource-job 内存映射 | 否 | 旧 job ID 重启后失效；同一幂等创建请求会修复绑定并返回新的可轮询 job ID |
+| job 状态、ID 与有界结果快照 | 是 | 活动快照安全转为 `FAILED`/`worker_restarted`；保留期内旧 ID 仍可查询 |
+| 任务线程、Python callable 和 resource-job 内存映射 | 否 | 不恢复旧执行；按 Catalog 状态重建当前进程的任务与资源绑定 |
 | 会话历史 | 否 | 重启后清空 |
 | 限流桶、活动索引 LRU、进程指标 | 否 | 重启后重置 |
 
@@ -205,13 +208,13 @@ Catalog 以 SQLite `user_version=3` 标识当前 schema。全新空存储会直�
 
 ## 并发模型
 
-- 一个 `JobManager` 使用有界 `ThreadPoolExecutor`；保留的活动/终态 job 快照总量、每租户快照量、worker 数和任务 TTL 均由配置限制。
+- 一个 `JobManager` 使用有界 `ThreadPoolExecutor`；进程内活动/终态 job 数、每租户数量、worker 数和内存 TTL 均由配置限制。SQLite 归档另有更长的 TTL 与每租户容量边界。
 - 回答入口另有全局并发闸门，Embedding 与可选 CrossEncoder 推理在单进程内序列化，避免默认单节点被 CPU 推理过度订阅。
 - `RagPlatform` 使用分片资源锁串行化同一知识库的状态变更；`IndexManager` 使用分片构建锁避免同一确定性索引重复构建。
 - SQLite 写操作由进程内锁和显式事务保护；目录读取保持租户条件。
 - 活动索引和会话均采用 TTL/LRU 淘汰。淘汰持久索引只释放句柄，显式删除才移除集合。
 - 该模型只在单进程、单 worker 内成立。多个 Uvicorn worker 或多个容器不会共享任务、锁、会话、限流和缓存。
-- “耐久取消”只指 Catalog 中的知识库取消意图与重启收敛，不代表 worker、队列、job 快照或 job ID 已持久化。
+- “耐久 job”只指状态、ID 和有界结果快照可查询；worker、队列和 Python callable 不会持久化或跨重启继续执行。
 - 租户隔离保证鉴权与数据边界，不承诺独立 QoS；任务、会话与索引缓存仍共享节点总容量。高对抗或强 SLA 场景需要外置公平队列、每租户配额和独立资源池。
 
 ## 当前非目标与扩展边界

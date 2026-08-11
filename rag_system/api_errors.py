@@ -36,11 +36,12 @@ from rag_system.idempotency import (
     IdempotencyUnavailableError,
     IdempotencyValidationError,
 )
-from rag_system.jobs import (
+from rag_system.job_contracts import (
     JobCapacityError,
     JobError,
     JobManagerShutdownError,
     JobNotFoundError,
+    JobStorageError,
     JobSubmissionError,
 )
 from rag_system.loaders import DocumentLoadError
@@ -127,6 +128,7 @@ def classify_application_error(error: Exception) -> tuple[int, str, str]:
             JobCapacityError,
             JobSubmissionError,
             JobManagerShutdownError,
+            JobStorageError,
             PlatformUnavailableError,
             CatalogSchemaError,
             CatalogStorageError,

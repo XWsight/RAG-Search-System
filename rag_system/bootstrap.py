@@ -25,6 +25,7 @@ from rag_system.file_store import TenantFileStore
 from rag_system.index_manager import IndexManager
 from rag_system.idempotency import IdempotencyStore
 from rag_system.jobs import JobManager
+from rag_system.job_store import SqliteJobSnapshotStore
 from rag_system.health import HealthProbe, ReadinessMonitor
 from rag_system.metrics import create_operational_metrics
 from rag_system.observability import JsonEventLogger
@@ -249,11 +250,18 @@ def build_production_runtime(*, dotenv_path: Path | None = None) -> ProductionRu
             max_total_bytes=settings.max_tenant_storage_bytes,
             max_files_per_tenant=settings.max_files_per_tenant,
         )
+        job_snapshots = SqliteJobSnapshotStore(
+            storage_root / "jobs.sqlite3",
+            ttl_seconds=settings.job_history_ttl_seconds,
+            max_records_per_tenant=settings.job_history_max_per_tenant,
+        )
+        job_snapshots.recover_interrupted()
         jobs: JobExecutor = JobManager(
             max_workers=settings.job_workers,
             max_jobs=settings.max_jobs,
             max_jobs_per_tenant=settings.max_jobs_per_tenant,
             ttl_seconds=settings.job_ttl_seconds,
+            snapshot_store=job_snapshots,
         )
         idempotency: IdempotencyRepository = IdempotencyStore(
             storage_root / "idempotency.sqlite3",

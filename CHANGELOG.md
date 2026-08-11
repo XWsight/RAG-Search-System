@@ -18,6 +18,7 @@
 - 本地、混合、联网与拒答路由，引用白名单和有预算上限的研究模式。
 - 有界多轮会话记忆，以及租户、知识库和浏览器会话三重隔离。
 - FastAPI 服务、角色授权、请求前认证、限流、持久幂等和后台索引任务。
+- 租户隔离的 SQLite job 快照归档：任务状态、ID 和有界结果可跨重启查询；中断执行会安全终态化，Catalog 恢复仍以新 worker 重新提交，避免伪装成可恢复的分布式队列。
 - 可重试的协作取消状态机：先耐久提交知识库 `CANCELLING` 意图，再向 worker 发信号；重启或幂等重放把残留意图收敛为 `FAILED`/`index_cancelled` 并提供可轮询 job，而已经提交的 `READY` 优先于迟到取消。
 - SQLite 资源目录、租户文件存储、持久索引复用、崩溃恢复和完整删除流程。
 - Prometheus 指标、隐私安全事件日志、健康检查、Docker Compose 和运维手册。
@@ -29,7 +30,7 @@
 
 ### Changed
 
-- Refactored platform workflows onto explicit repository, document-store, job-executor, index-lifecycle, and knowledge-service ports. Production readiness now composes fail-closed probes for catalog, document, job, and vector storage; the 26-module architecture spine is protected by strict mypy and dependency-direction gates.
+- Refactored platform workflows onto explicit repository, document-store, job-executor, index-lifecycle, and knowledge-service ports. Production readiness now composes fail-closed probes for catalog, document, job, and vector storage; the 28-module architecture spine is protected by strict mypy and dependency-direction gates.
 
 - 本地入口改为模块化的 Gradio 工作台；原始 V1.0 继续保留在 `main` 分支。
 - 云端生成和网络搜索改为请求级显式授权，默认保持关闭。

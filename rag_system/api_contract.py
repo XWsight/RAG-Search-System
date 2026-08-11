@@ -15,7 +15,7 @@ from rag_system.grounding import (
     MAX_CLAIM_CHARACTERS,
     MAX_GROUNDED_ANSWER_CHARACTERS,
 )
-from rag_system.jobs import JobSnapshot, JobStatus
+from rag_system.job_contracts import JobSnapshot, JobStatus
 
 
 RESOURCE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"

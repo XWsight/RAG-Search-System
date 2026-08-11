@@ -18,6 +18,7 @@ from rag_system.application import (
 from rag_system.catalog import KnowledgeBaseUnavailableError
 from rag_system.file_store import DuplicateResourceError, StorageLimitError
 from rag_system.idempotency import IdempotencyConflictError
+from rag_system.job_contracts import JobStorageError
 from rag_system.tenancy import AuthenticationError, AuthorizationError
 
 
@@ -34,6 +35,7 @@ class ApiErrorContractTests(unittest.TestCase):
             (StorageLimitError("large"), (413, "storage_limit_exceeded")),
             (PlatformValidationError("bad"), (422, "invalid_request")),
             (PlatformUnavailableError("down"), (503, "service_unavailable")),
+            (JobStorageError("down"), (503, "service_unavailable")),
             (PlatformIntegrityError("corrupt"), (500, "internal_error")),
             (RuntimeError("unknown"), (500, "internal_error")),
         )

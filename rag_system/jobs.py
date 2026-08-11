@@ -11,84 +11,24 @@ from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Any
 
-
-class JobStatus(StrEnum):
-    QUEUED = "queued"
-    RUNNING = "running"
-    CANCELLING = "cancelling"
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-    @property
-    def terminal(self) -> bool:
-        return self in {self.SUCCEEDED, self.FAILED, self.CANCELLED}
-
-
-@dataclass(frozen=True, slots=True)
-class JobId:
-    value: str
-
-    def __post_init__(self) -> None:
-        _require_text(self.value, "job_id")
-
-    def __str__(self) -> str:
-        return self.value
-
-
-@dataclass(frozen=True, slots=True)
-class JobSnapshot:
-    job_id: JobId
-    status: JobStatus
-    created_at: float
-    updated_at: float
-    started_at: float | None = None
-    finished_at: float | None = None
-    result: dict[str, Any] | None = None
-    error_code: str = ""
-    error_message: str = ""
-
-
-class JobError(RuntimeError):
-    """Base class for safe job-management errors."""
-
-
-class JobNotFoundError(JobError):
-    pass
-
-
-class JobCapacityError(JobError):
-    pass
-
-
-class JobManagerShutdownError(JobError):
-    pass
-
-
-class JobSubmissionError(JobError):
-    pass
-
-
-class JobCancelledError(Exception):
-    """Raised by cooperative tasks after observing cancellation."""
-
-
-class CancellationToken:
-    """Read-only cooperative cancellation signal passed to each task."""
-
-    def __init__(self, event: threading.Event) -> None:
-        self._event = event
-
-    @property
-    def cancelled(self) -> bool:
-        return self._event.is_set()
-
-    def raise_if_cancelled(self) -> None:
-        if self.cancelled:
-            raise JobCancelledError()
+from rag_system.job_contracts import (
+    CancellationToken,
+    JobCancelledError,
+    JobCapacityError,
+    JobError,
+    JobId,
+    JobManagerShutdownError,
+    JobNotFoundError,
+    JobSnapshot,
+    JobSnapshotRepository,
+    JobStatus,
+    JobStorageError,
+    JobSubmissionError,
+    job_id_value,
+    require_job_text,
+)
 
 
 @dataclass(slots=True)
@@ -131,9 +71,10 @@ class JobManager:
         max_result_bytes: int = 32_768,
         max_result_depth: int = 8,
         max_result_items: int = 512,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = time.time,
         executor: Executor | None = None,
         id_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
+        snapshot_store: JobSnapshotRepository | None = None,
     ) -> None:
         if isinstance(max_workers, bool) or not isinstance(max_workers, int):
             raise TypeError("max_workers must be an integer")
@@ -170,6 +111,11 @@ class JobManager:
             or not callable(getattr(executor, "shutdown", None))
         ):
             raise TypeError("executor must provide submit and shutdown")
+        if snapshot_store is not None and any(
+            not callable(getattr(snapshot_store, method, None))
+            for method in ("put", "get", "delete", "healthcheck")
+        ):
+            raise TypeError("snapshot_store does not implement the job snapshot contract")
 
         self._max_jobs = max_jobs
         self._max_jobs_per_tenant = tenant_limit
@@ -183,6 +129,8 @@ class JobManager:
             max_workers=max_workers,
             thread_name_prefix="rag-job",
         )
+        self._snapshot_store = snapshot_store
+        self._snapshot_healthy = True
         self._jobs: OrderedDict[str, _JobRecord] = OrderedDict()
         self._idempotency: dict[tuple[str, str], str] = {}
         self._shutdown = False
@@ -198,8 +146,8 @@ class JobManager:
     ) -> JobId:
         """Submit once per tenant/idempotency key and return the stable ID."""
 
-        tenant_key = _require_text(tenant_id, "tenant_id")
-        request_key = _require_text(idempotency_key, "idempotency_key")
+        tenant_key = require_job_text(tenant_id, "tenant_id")
+        request_key = require_job_text(idempotency_key, "idempotency_key")
         if not callable(task):
             raise TypeError("task must be callable")
 
@@ -233,9 +181,16 @@ class JobManager:
             self._idempotency[idempotency_identity] = job_id.value
 
             try:
+                self._persist_locked(record, strict=True)
                 future = self._executor.submit(self._execute, job_id, task)
             except Exception:
                 self._remove_locked(job_id.value)
+                if self._snapshot_store is not None:
+                    try:
+                        self._snapshot_store.delete(tenant_key, job_id)
+                    except JobError:
+                        self._snapshot_healthy = False
+                        pass
                 raise JobSubmissionError("job could not be scheduled") from None
             record.future = future
             return job_id
@@ -243,43 +198,58 @@ class JobManager:
     def get(self, tenant_id: str, job_id: JobId | str) -> JobSnapshot:
         """Return one job without revealing whether another tenant owns it."""
 
-        tenant_key = _require_text(tenant_id, "tenant_id")
-        resolved_id = _job_id_value(job_id)
+        tenant_key = require_job_text(tenant_id, "tenant_id")
+        resolved_id = job_id_value(job_id)
+        snapshot_store: JobSnapshotRepository | None = None
         with self._lock:
             now = self._now()
             self._cleanup_expired_locked(now)
             record = self._jobs.get(resolved_id)
-            if record is None or record.tenant_id != tenant_key:
-                raise JobNotFoundError("job not found")
-            self._touch_locked(record, now)
-            return self._snapshot_locked(record)
+            if record is None:
+                snapshot_store = self._snapshot_store
+            else:
+                if record.tenant_id != tenant_key:
+                    raise JobNotFoundError("job not found")
+                self._touch_locked(record, now)
+                return self._snapshot_locked(record)
+        if snapshot_store is None:
+            raise JobNotFoundError("job not found")
+        return snapshot_store.get(tenant_key, resolved_id)
 
     def cancel(self, tenant_id: str, job_id: JobId | str) -> JobSnapshot:
         """Request cooperative cancellation within the owning tenant."""
 
-        tenant_key = _require_text(tenant_id, "tenant_id")
-        resolved_id = _job_id_value(job_id)
+        tenant_key = require_job_text(tenant_id, "tenant_id")
+        resolved_id = job_id_value(job_id)
+        snapshot_store: JobSnapshotRepository | None = None
         with self._lock:
             now = self._now()
             self._cleanup_expired_locked(now)
             record = self._jobs.get(resolved_id)
-            if record is None or record.tenant_id != tenant_key:
-                raise JobNotFoundError("job not found")
-            if not record.status.terminal:
-                record.cancellation.set()
-                future_cancelled = bool(
-                    record.future is not None and record.future.cancel()
-                )
-                if future_cancelled:
-                    self._finish_locked(record, JobStatus.CANCELLED, now)
-                elif record.status is not JobStatus.CANCELLING:
-                    record.status = JobStatus.CANCELLING
-                    record.updated_at = now
-                    record.last_accessed_at = now
-                    self._jobs.move_to_end(record.job_id.value)
+            if record is None:
+                snapshot_store = self._snapshot_store
             else:
-                self._touch_locked(record, now)
-            return self._snapshot_locked(record)
+                if record.tenant_id != tenant_key:
+                    raise JobNotFoundError("job not found")
+                if not record.status.terminal:
+                    record.cancellation.set()
+                    future_cancelled = bool(
+                        record.future is not None and record.future.cancel()
+                    )
+                    if future_cancelled:
+                        self._finish_locked(record, JobStatus.CANCELLED, now)
+                    elif record.status is not JobStatus.CANCELLING:
+                        record.status = JobStatus.CANCELLING
+                        record.updated_at = now
+                        record.last_accessed_at = now
+                        self._jobs.move_to_end(record.job_id.value)
+                        self._persist_locked(record)
+                else:
+                    self._touch_locked(record, now)
+                return self._snapshot_locked(record)
+        if snapshot_store is None:
+            raise JobNotFoundError("job not found")
+        return snapshot_store.get(tenant_key, resolved_id)
 
     def cleanup(self) -> int:
         """Remove terminal jobs whose idle TTL has elapsed."""
@@ -290,7 +260,7 @@ class JobManager:
     def stats(self, tenant_id: str) -> dict[str, int]:
         """Return status counts for exactly one tenant."""
 
-        tenant_key = _require_text(tenant_id, "tenant_id")
+        tenant_key = require_job_text(tenant_id, "tenant_id")
         with self._lock:
             self._cleanup_expired_locked(self._now())
             records = [record for record in self._jobs.values() if record.tenant_id == tenant_key]
@@ -324,6 +294,7 @@ class JobManager:
                         record.updated_at = now
                         record.last_accessed_at = now
                         self._jobs.move_to_end(record.job_id.value)
+                        self._persist_locked(record)
             self._executor_shutdown = True
 
         try:
@@ -333,7 +304,17 @@ class JobManager:
 
     def healthcheck(self) -> bool:
         with self._lock:
-            return not self._shutdown and not self._executor_shutdown
+            locally_healthy = (
+                not self._shutdown
+                and not self._executor_shutdown
+                and self._snapshot_healthy
+            )
+        if not locally_healthy:
+            return False
+        try:
+            return self._snapshot_store is None or self._snapshot_store.healthcheck() is True
+        except Exception:
+            return False
 
     def __enter__(self) -> JobManager:
         return self
@@ -358,6 +339,13 @@ class JobManager:
             record.last_accessed_at = now
             self._jobs.move_to_end(job_id.value)
             token = CancellationToken(record.cancellation)
+            try:
+                self._persist_locked(record, strict=True)
+            except JobStorageError:
+                record.error_code = "job_storage_failed"
+                record.error_message = "job snapshot storage operation failed"
+                self._finish_locked(record, JobStatus.FAILED, now, persist=False)
+                return
 
         try:
             token.raise_if_cancelled()
@@ -416,12 +404,21 @@ class JobManager:
             record.error_message = message
             self._finish_locked(record, JobStatus.FAILED, self._now())
 
-    def _finish_locked(self, record: _JobRecord, status: JobStatus, now: float) -> None:
+    def _finish_locked(
+        self,
+        record: _JobRecord,
+        status: JobStatus,
+        now: float,
+        *,
+        persist: bool = True,
+    ) -> None:
         record.status = status
         record.updated_at = now
         record.finished_at = now
         record.last_accessed_at = now
         self._jobs.move_to_end(record.job_id.value)
+        if persist:
+            self._persist_locked(record)
 
     def _snapshot_locked(self, record: _JobRecord) -> JobSnapshot:
         result = json.loads(record.result_json) if record.result_json is not None else None
@@ -436,6 +433,16 @@ class JobManager:
             error_code=record.error_code,
             error_message=record.error_message,
         )
+
+    def _persist_locked(self, record: _JobRecord, *, strict: bool = False) -> None:
+        if self._snapshot_store is None:
+            return
+        try:
+            self._snapshot_store.put(record.tenant_id, self._snapshot_locked(record))
+        except JobStorageError:
+            self._snapshot_healthy = False
+            if strict:
+                raise
 
     def _touch_locked(self, record: _JobRecord, now: float) -> None:
         record.last_accessed_at = now
@@ -604,21 +611,6 @@ def _normalize_json_value(
     raise _InvalidResultError()
 
 
-def _require_text(value: str, name: str) -> str:
-    if not isinstance(value, str):
-        raise TypeError(f"{name} must be a string")
-    normalized = value.strip()
-    if not normalized:
-        raise ValueError(f"{name} cannot be empty")
-    return normalized
-
-
-def _job_id_value(job_id: JobId | str) -> str:
-    if isinstance(job_id, JobId):
-        return job_id.value
-    return _require_text(job_id, "job_id")
-
-
 __all__ = [
     "CancellationToken",
     "JobCancelledError",
@@ -630,5 +622,6 @@ __all__ = [
     "JobNotFoundError",
     "JobSnapshot",
     "JobStatus",
+    "JobStorageError",
     "JobSubmissionError",
 ]

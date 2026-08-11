@@ -20,6 +20,7 @@ FRAMEWORK_NEUTRAL_MODULES = (
     "rag_system/assets.py",
     "rag_system/indexing.py",
     "rag_system/health.py",
+    "rag_system/job_contracts.py",
 )
 FORBIDDEN_FRAMEWORK_PREFIXES = (
     "chromadb",
@@ -76,6 +77,23 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         }
         imported = set(_imported_symbols(ROOT / "rag_system/platform.py"))
         self.assertEqual(sorted(imported & forbidden), [])
+
+    def test_application_layers_do_not_depend_on_the_job_executor(self) -> None:
+        modules = (
+            "rag_system/application.py",
+            "rag_system/application_ports.py",
+            "rag_system/api_contract.py",
+            "rag_system/api_errors.py",
+            "rag_system/coordination.py",
+            "rag_system/indexing.py",
+            "rag_system/platform.py",
+        )
+        violations = [
+            relative
+            for relative in modules
+            if "rag_system.jobs" in _imports(ROOT / relative)
+        ]
+        self.assertEqual(violations, [])
 
     def test_production_modules_have_no_import_cycles(self) -> None:
         modules = {

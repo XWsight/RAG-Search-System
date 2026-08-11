@@ -67,6 +67,8 @@ files = [
   "rag_system/indexing.py",
   "rag_system/ingestion.py",
   "rag_system/jobs.py",
+  "rag_system/job_contracts.py",
+  "rag_system/job_store.py",
   "rag_system/loaders.py",
   "rag_system/memory.py",
   "rag_system/metrics.py",

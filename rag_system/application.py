@@ -9,7 +9,7 @@ from typing import BinaryIO, Protocol
 from rag_system.catalog import KnowledgeBaseRecord
 from rag_system.config import Settings
 from rag_system.domain import AnswerRequest, AnswerResult
-from rag_system.jobs import JobId, JobSnapshot
+from rag_system.job_contracts import JobId, JobSnapshot
 from rag_system.metrics import OperationalMetrics
 from rag_system.tenancy import Principal
 
