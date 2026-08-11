@@ -19,6 +19,7 @@ from rag_system.ingestion import DocumentIngestor  # noqa: E402
 from rag_system.quality_gate import evaluate_quality_gate, load_quality_gate  # noqa: E402
 from rag_system.retrieval import RoutingPolicy  # noqa: E402
 from rag_system.sparse import BM25Index, SparseDocument  # noqa: E402
+from rag_system.text import lexical_relevance  # noqa: E402
 
 
 class SparseBaselineRetriever:
@@ -38,6 +39,7 @@ class SparseBaselineRetriever:
                 score=hit.score / (hit.score + 1.0),
                 sparse_rank=rank,
                 reasons=("sparse",),
+                lexical_score=lexical_relevance(query, self._chunks[hit.document_id].text),
             )
             for rank, hit in enumerate(sparse_hits, start=1)
         )

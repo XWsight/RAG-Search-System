@@ -3,10 +3,10 @@
   "dataset_digest": "74fe19194ca06876",
   "top_k": 5,
   "minimum_metrics": {
-    "mrr_at_k": 0.958,
-    "ndcg_at_k": 0.969,
+    "mrr_at_k": 1.0,
+    "ndcg_at_k": 1.0,
     "recall_at_k": 1.0,
-    "route_accuracy": 0.833
+    "route_accuracy": 1.0
   },
   "maximum_latency_ms": {}
 }

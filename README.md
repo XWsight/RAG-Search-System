@@ -149,17 +149,21 @@ python scripts\benchmark_sparse.py evals\retrieval_cases.jsonl `
   --markdown-output reports\bm25-smoke.md
 ```
 
-当前 12 题开发集上的依赖无关 BM25 冒烟基线为 Recall@5 `1.0000`、MRR@5 `0.9500`、nDCG@5 `0.9631`、路由准确率 `0.7500`。这个小型、仓库内开发集只用于回归，**不能外推为真实业务效果**，引用指标也不适用于该检索集。
+当前 ground truth 摘要 `74fe19194ca06876` 的 18 题开发集上，依赖无关 BM25 冒烟基线为 Recall@5 `1.0000`、MRR@5 `0.9583`、nDCG@5 `0.9692`、路由准确率 `0.8333`。这个小型、仓库内开发集只用于回归，**不能外推为真实业务效果**，引用指标也不适用于该检索集。
 
-报告同时列出每题的缺失相关来源、期望/实际路由、首个相关排名、置信度和延迟，并汇总 P50/P95/P99。冻结门禁会校验数据集摘要、top-k 和最低指标；任何回归都会让本地检查与 GitHub CI 失败。延迟受硬件和缓存影响，当前只报告、不作为跨机器硬门槛。
+报告同时列出每题的缺失相关来源、期望/实际路由、首个相关排名、置信度和延迟，并汇总 P50/P95/P99。冻结门禁会校验数据集摘要、top-k 和最低指标；依赖无关的 BM25 门禁由本地检查与 GitHub CI 自动执行。延迟受硬件和缓存影响，当前只报告、不作为跨机器硬门槛。
 
 真实混合检索需要安装运行依赖后执行：
 
 ```powershell
 python scripts\benchmark_retrieval.py evals\retrieval_cases.jsonl `
   evals\corpus\rag.md evals\corpus\retrieval.md `
-  evals\corpus\safety.md evals\corpus\storage.md
+  evals\corpus\safety.md evals\corpus\storage.md `
+  --top-k 5 `
+  --quality-gate evals\gates\hybrid-development.json
 ```
+
+在当前本地模型标识与默认配置下，当前 18 题 Hybrid 开发基线的 Recall@5、MRR@5、nDCG@5 和路由准确率均为 `1.0000`。该门禁需要下载并运行 Embedding 模型，因此是发布前手动门禁，不在默认 CI 中执行。该集合专门加入了语义改写、本地越界和必须联网的对抗题，仍然只是开发回归证据，不是生产质量或真实业务泛化证明。
 
 评测协议、数据泄漏防范与阈值校准见[评测文档](docs/evaluation.md)。仓库中的 `evals/sample_dataset.jsonl` 是评测格式夹具，不是系统性能证明。
 

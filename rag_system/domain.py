@@ -44,6 +44,7 @@ class SearchHit:
     sparse_rank: int | None = None
     dense_distance: float | None = None
     reasons: tuple[str, ...] = ()
+    lexical_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

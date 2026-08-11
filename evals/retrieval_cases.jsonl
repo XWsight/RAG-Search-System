@@ -10,3 +10,9 @@
 {"case_id":"safe_errors","question":"错误信息和日志中为什么不能直接显示上游响应？","relevance":{"safety.md":3},"expected_route":"local","allow_web":false}
 {"case_id":"unknown_local","question":"吉林大学今天食堂的菜单是什么？","relevance":{},"expected_route":"refused","allow_web":false}
 {"case_id":"unknown_web","question":"今天有哪些新的框架版本发布？","relevance":{},"expected_route":"web","allow_web":true}
+{"case_id":"embedding_paraphrase","question":"语义相近的文字如何通过数值表示并保存，以便之后检索？","relevance":{"storage.md":3},"expected_route":"local","allow_web":false}
+{"case_id":"privacy_paraphrase","question":"没有得到用户许可时，系统能否把检索片段发给第三方模型？","relevance":{"safety.md":3},"expected_route":"local","allow_web":false}
+{"case_id":"unknown_local_weather","question":"长春明天会下雪吗？","relevance":{},"expected_route":"refused","allow_web":false}
+{"case_id":"unknown_local_private","question":"帮我查询我的本学期成绩单。","relevance":{},"expected_route":"refused","allow_web":false}
+{"case_id":"unknown_web_exchange","question":"今天人民币兑美元的汇率是多少？","relevance":{},"expected_route":"web","allow_web":true}
+{"case_id":"unknown_web_python","question":"本周有哪些新的 Python 版本发布？","relevance":{},"expected_route":"web","allow_web":true}

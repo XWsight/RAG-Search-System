@@ -76,7 +76,7 @@ CI 在 Python 3.11/3.12 上执行单元测试、Ruff、分支覆盖率门槛和�
 - 是否运行真实 hybrid、云端、人工、延迟或安全测试；
 - 未运行项目和原因。
 
-`evals/sample_dataset.jsonl` 只是指标夹具。不得用它声明实际系统性能。12-case BM25 结果只是开发 smoke baseline，也不得外推。
+`evals/sample_dataset.jsonl` 只是指标夹具。不得用它声明实际系统性能。18-case BM25/Hybrid 结果只是开发回归基线，也不得外推。
 
 若有意更新 [`evals/gates/bm25-smoke.json`](evals/gates/bm25-smoke.json)，提交必须解释数据集摘要变化、逐题差异和门槛调整理由。不得为了让退化代码通过而单独降低门槛。
 

@@ -290,6 +290,7 @@ class HybridRetriever:
                     sparse_rank=(sparse_ids.index(item.item_id) + 1) if sparse_hit else None,
                     dense_distance=dense_hit.dense_distance if dense_hit else None,
                     reasons=reasons,
+                    lexical_score=lexical_score,
                 )
             )
 
@@ -340,14 +341,16 @@ class RoutingPolicy:
 
         if confidence >= self.settings.local_confidence_threshold:
             return RouteDecision(Route.LOCAL, confidence, "本地证据达到置信度阈值。")
-        if allow_web and confidence >= self.settings.local_confidence_threshold * 0.72:
+        hybrid_threshold = (
+            self.settings.local_confidence_threshold * self.settings.hybrid_confidence_ratio
+        )
+        if allow_web and confidence >= hybrid_threshold:
             return RouteDecision(Route.HYBRID, confidence, "本地证据不完整，将补充网络来源。")
         if allow_web:
             return RouteDecision(Route.WEB, confidence, "本地证据不足，将使用网络来源。")
         return RouteDecision(Route.REFUSED, confidence, "本地证据不足且联网搜索未开启。")
 
-    @staticmethod
-    def confidence(hits: Sequence[SearchHit]) -> float:
+    def confidence(self, hits: Sequence[SearchHit]) -> float:
         """Return the bounded confidence feature used by the routing policy."""
 
         if not hits:
@@ -355,8 +358,16 @@ class RoutingPolicy:
         top_score = max(0.0, min(1.0, hits[0].score))
         second_score = hits[1].score if len(hits) > 1 else 0.0
         margin = max(0.0, top_score - second_score)
-        agreement = 1.0 if {"dense", "sparse"}.issubset(hits[0].reasons) else 0.0
+        ranker_agreement = 1.0 if {"dense", "sparse"}.issubset(hits[0].reasons) else 0.0
+        lexical_score = max(0.0, min(1.0, hits[0].lexical_score or 0.0))
+        lexical_support = min(
+            1.0,
+            lexical_score / self.settings.routing_lexical_saturation,
+        )
+        supported_agreement = ranker_agreement * lexical_support
         return min(
             1.0,
-            0.75 * top_score + 0.15 * agreement + 0.10 * min(1.0, margin * 4),
+            0.75 * top_score
+            + 0.15 * supported_agreement
+            + 0.10 * min(1.0, margin * 4),
         )

@@ -37,7 +37,7 @@ python scripts/evaluate.py evals/sample_dataset.jsonl --top-k 5 `
 
 该文件只有 6 个手工样例，且已经包含“预测”和回答，因此输出只能用于验证评测器。它不会加载文档、创建 Chroma、调用 Embedding、搜索网页或调用模型。报告它时必须称为 **sample fixture**，不能称为项目 Recall、路由准确率或回答质量。
 
-## 2. 12-case BM25 smoke baseline
+## 2. 18-case BM25 smoke baseline
 
 无需 Chroma、模型下载或云端调用：
 
@@ -53,16 +53,16 @@ python scripts/benchmark_sparse.py evals/retrieval_cases.jsonl `
   --markdown-output reports/bm25-smoke.md
 ```
 
-在 2026-08-11、数据集摘要 `2723586171c4445d`、仓库当前默认检索/路由配置下，本地实测为：
+在 2026-08-11、ground truth 摘要 `74fe19194ca06876`、仓库当前默认检索/路由配置下，本地实测为：
 
 | 指标 | 结果 |
 | --- | ---: |
 | Recall@5 | 1.000000000000 |
-| MRR@5 | 0.950000000000 |
-| nDCG@5 | 0.963092975357 |
-| 路由准确率 | 0.750000000000 |
+| MRR@5 | 0.958333333333 |
+| nDCG@5 | 0.969244146131 |
+| 路由准确率 | 0.833333333333 |
 
-该开发集只有 12 个样例，其中 10 个有相关来源，语料仅 4 篇、主题与代码高度贴近。结果适合发现明显回归，**不可外推**到真实业务、不同语言、长文档、同名来源、噪声语料或更大知识库。路由准确率 0.75 也表明当前默认阈值在该集合上仍有误路由，不应只展示检索指标而隐藏路由表现。
+该开发集只有 18 个样例，其中 12 个有相关来源，语料仅 4 篇、主题与代码高度贴近。新增样例覆盖语义改写、本地越界和必须联网的问题。结果适合发现明显回归，**不可外推**到真实业务、不同语言、长文档、同名来源、噪声语料或更大知识库。BM25 缺少语义模型，仍会误拒部分可回答改写题，因此不应把它的路由结果冒充 Hybrid 表现。
 
 这个 benchmark 没有引用样例；Markdown 报告把引用有效率/覆盖率显示为 `N/A`。机器可读 JSON 为保持指标字段始终是数值，仍用 `1.0` 表示“没有待评引用时的约定值”，不能解释为生成引用达到 100%。
 
@@ -70,9 +70,9 @@ python scripts/benchmark_sparse.py evals/retrieval_cases.jsonl `
 
 [`evals/gates/bm25-smoke.json`](../evals/gates/bm25-smoke.json) 固定以下契约：
 
-- 数据集摘要必须为 `2723586171c4445d`，防止数据悄悄变化后继续沿用旧基线；
+- ground truth 摘要必须为 `74fe19194ca06876`，防止题目或人工标签悄悄变化后继续沿用旧基线；摘要只依赖问题、相关来源、期望路由和联网许可，不包含系统预测，因此不同检索器可以公平比较；
 - `top_k` 必须为 5，防止通过扩大候选数量伪造提升；
-- Recall@5 不低于 `1.0`、MRR@5 不低于 `0.95`、nDCG@5 不低于 `0.963`、路由准确率不低于 `0.75`；
+- Recall@5 不低于 `1.0`、MRR@5 不低于 `0.958`、nDCG@5 不低于 `0.969`、路由准确率不低于 `0.833`；
 - 门禁 JSON 使用严格 schema：未知字段、重复键、NaN、无穷大、越界值和错误类型都会失败；
 - 指标回归时脚本仍先写出逐题 JSON/Markdown 报告，然后以退出码 `3` 结束，便于 CI 保存诊断。
 
@@ -91,6 +91,7 @@ python scripts/benchmark_retrieval.py evals/retrieval_cases.jsonl `
   evals/corpus/safety.md `
   evals/corpus/storage.md `
   --top-k 5 `
+  --quality-gate evals/gates/hybrid-development.json `
   --json-output reports/hybrid-run.json `
   --markdown-output reports/hybrid-run.md
 ```
@@ -100,10 +101,10 @@ python scripts/benchmark_retrieval.py evals/retrieval_cases.jsonl `
 - Git commit、Python/操作系统、`requirements.txt` 和模型缓存版本；
 - `EMBEDDING_MODEL`、`RAG_RERANKER_MODEL` 与 weight；
 - chunk size/overlap、dense/sparse/fused candidates、final evidence count；
-- `RAG_LOCAL_CONFIDENCE` 和 top-k；
+- `RAG_LOCAL_CONFIDENCE`、`RAG_HYBRID_CONFIDENCE_RATIO`、`RAG_ROUTING_LEXICAL_SATURATION` 和 top-k；
 - ground truth 文件摘要与 corpus 内容摘要。
 
-仓库当前不附带 hybrid 质量门禁或已经执行的 hybrid 结果。冻结独立 validation 集后，可以按 BM25 gate 的严格格式创建独立门禁，并用 `--quality-gate path/to/hybrid-quality-gate.json` 启用。不得引用 BM25 数字作为 hybrid 成绩。建议把报告保存到忽略跟踪的 `reports/`，在变更说明中提供 before/after、运行环境和报告摘要。
+当前 18 题 Hybrid 开发基线的 Recall@5、MRR@5、nDCG@5 和路由准确率均为 `1.0`，并由 [`hybrid-development.json`](../evals/gates/hybrid-development.json) 冻结。它需要实际加载 Embedding 模型，是发布前手动门禁；默认 CI 只运行不依赖模型下载的 BM25 门禁。该结果来自本地 `BAAI/bge-small-zh-v1.5`、当前依赖与默认配置，不代表独立 blind test、生成质量或生产 SLA。不得引用 BM25 数字作为 Hybrid 成绩，也不得把这 18 题的满分外推为真实业务准确率。
 
 ## 路由阈值校准
 
@@ -118,7 +119,7 @@ python scripts/calibrate_threshold.py `
   --output reports/threshold.md
 ```
 
-校准器枚举候选阈值，先最小化 `2 × FP + 1 × FN` 的平均加权错误，再依次偏好更高 F1、更高 precision 和更保守的阈值。这里 FP 表示本地证据不足却选择本地回答，默认代价更高。
+校准器枚举相邻置信度的中点，先最小化 `2 × FP + 1 × FN` 的平均加权错误，再依次偏好更高 F1、更高 precision 和离最近样例更远的稳定间隔。这里 FP 表示本地证据不足却选择本地回答，默认代价更高。当前开发集推荐阈值为 `0.655070`，最近样例距离为 `0.056669`；这个数字仍需在更大且独立的 validation 集上复核。
 
 不要在同一小集合上选阈值后又把该集合的最优结果当作无偏测试成绩。正确流程是：
 

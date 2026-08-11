@@ -97,7 +97,13 @@ class Settings:
     fused_candidates: int = field(default_factory=lambda: _env_int("RAG_FUSED_CANDIDATES", 12))
     final_evidence_count: int = field(default_factory=lambda: _env_int("RAG_FINAL_EVIDENCE", 5))
     local_confidence_threshold: float = field(
-        default_factory=lambda: _env_float("RAG_LOCAL_CONFIDENCE", 0.58)
+        default_factory=lambda: _env_float("RAG_LOCAL_CONFIDENCE", 0.655070)
+    )
+    hybrid_confidence_ratio: float = field(
+        default_factory=lambda: _env_float("RAG_HYBRID_CONFIDENCE_RATIO", 0.95)
+    )
+    routing_lexical_saturation: float = field(
+        default_factory=lambda: _env_float("RAG_ROUTING_LEXICAL_SATURATION", 0.30)
     )
     max_file_bytes: int = field(default_factory=lambda: _env_int("RAG_MAX_FILE_BYTES", 5 * 1024 * 1024))
     max_total_bytes: int = field(default_factory=lambda: _env_int("RAG_MAX_TOTAL_BYTES", 20 * 1024 * 1024))
@@ -186,6 +192,10 @@ class Settings:
             raise ValueError("sparse_candidates cannot be smaller than fused_candidates")
         if not 0.0 <= self.local_confidence_threshold <= 1.0:
             raise ValueError("local_confidence_threshold must be between 0 and 1")
+        if not 0.5 <= self.hybrid_confidence_ratio < 1.0:
+            raise ValueError("hybrid_confidence_ratio must be at least 0.5 and below 1.0")
+        if not 0.05 <= self.routing_lexical_saturation <= 1.0:
+            raise ValueError("routing_lexical_saturation must be between 0.05 and 1.0")
         if not 0.0 <= self.reranker_weight <= 1.0:
             raise ValueError("reranker_weight must be between 0 and 1")
         if self.max_file_bytes < 1 or self.max_total_bytes < self.max_file_bytes:

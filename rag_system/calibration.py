@@ -34,6 +34,7 @@ class CalibrationReport:
     recall: float
     f1: float
     weighted_error: float
+    stability_margin: float
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -49,6 +50,7 @@ class CalibrationReport:
             "recall": self.recall,
             "f1": self.f1,
             "weighted_error": self.weighted_error,
+            "stability_margin": self.stability_margin,
         }
 
     def to_json(self) -> str:
@@ -63,6 +65,7 @@ class CalibrationReport:
             f"- Precision：`{self.precision:.4f}`\n"
             f"- Recall：`{self.recall:.4f}`\n"
             f"- F1：`{self.f1:.4f}`\n"
+            f"- 最近样例距离：`{self.stability_margin:.6f}`\n"
             f"- FP / FN：`{self.false_positives}` / `{self.false_negatives}`\n\n"
             "应用到 `.env`：\n\n"
             f"```dotenv\nRAG_LOCAL_CONFIDENCE={self.threshold:.6f}\n```\n"
@@ -75,7 +78,7 @@ def calibrate_threshold(
     false_positive_cost: float = 2.0,
     false_negative_cost: float = 1.0,
 ) -> CalibrationReport:
-    """Select a threshold by weighted error, then F1 and conservatism."""
+    """Select a cost-aware threshold with a stable margin between samples."""
 
     if not samples:
         raise ValueError("samples cannot be empty")
@@ -87,13 +90,14 @@ def calibrate_threshold(
     if len(identifiers) != len(set(identifiers)):
         raise ValueError("case_id values must be unique")
 
-    candidates = {0.0, 1.0}
-    candidates.update(sample.confidence for sample in samples)
+    confidence_levels = sorted({sample.confidence for sample in samples})
+    candidates = set(confidence_levels)
     candidates.update(
-        math.nextafter(sample.confidence, 1.0)
-        for sample in samples
-        if sample.confidence < 1.0
+        (lower + upper) / 2
+        for lower, upper in zip(confidence_levels, confidence_levels[1:], strict=False)
     )
+    if confidence_levels[-1] < 1.0:
+        candidates.add((confidence_levels[-1] + 1.0) / 2)
     reports = [
         _score(
             samples,
@@ -109,6 +113,7 @@ def calibrate_threshold(
             report.weighted_error,
             -report.f1,
             -report.precision,
+            -report.stability_margin,
             -report.threshold,
         ),
     )
@@ -138,6 +143,7 @@ def _score(
     weighted_error = (
         false_positive_cost * false_positives + false_negative_cost * false_negatives
     ) / len(samples)
+    stability_margin = min(abs(sample.confidence - threshold) for sample in samples)
     return CalibrationReport(
         threshold=round(threshold, 12),
         sample_count=len(samples),
@@ -149,6 +155,7 @@ def _score(
         recall=round(recall, 12),
         f1=round(f1, 12),
         weighted_error=round(weighted_error, 12),
+        stability_margin=round(stability_margin, 12),
     )
 
 

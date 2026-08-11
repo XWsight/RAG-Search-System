@@ -66,6 +66,12 @@ class QualityGateTests(unittest.TestCase):
         self.assertTrue(json.loads(result.to_json())["passed"])
         self.assertIn("通过", result.to_markdown())
 
+        hybrid_gate = load_quality_gate(
+            PROJECT_ROOT / "evals" / "gates" / "hybrid-development.json"
+        )
+        self.assertEqual(hybrid_gate.dataset_digest, "74fe19194ca06876")
+        self.assertEqual(dict(hybrid_gate.minimum_metrics)["route_accuracy"], 1.0)
+
     def test_metric_latency_and_compatibility_regressions_are_explained(self) -> None:
         run = _run()
         payload = _gate_payload(run)
@@ -160,7 +166,7 @@ class QualityGateTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            gate["minimum_metrics"]["route_accuracy"] = 0.8
+            gate["minimum_metrics"]["route_accuracy"] = 0.9
             gate_path.write_text(json.dumps(gate), encoding="utf-8")
             failed = subprocess.run(
                 [*command[:-1], str(gate_path), "--json-output", str(report_path)],

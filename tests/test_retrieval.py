@@ -49,14 +49,41 @@ class RetrievalTests(unittest.TestCase):
         hits = self.retriever.search("什么是 RAG", top_k=3)
         self.assertEqual(hits[0].chunk.chunk_id, "rag")
         self.assertEqual(set(hits[0].reasons), {"dense", "sparse"})
+        self.assertIsNotNone(hits[0].lexical_score)
+        self.assertGreater(hits[0].lexical_score or 0.0, 0.0)
         self.assertGreater(hits[0].score, hits[-1].score)
 
     def test_routing_respects_confidence_and_privacy_switch(self) -> None:
-        policy = RoutingPolicy(replace(self.settings, local_confidence_threshold=0.6))
-        high_hit = SearchHit(self.rag, 0.85, reasons=("dense", "sparse"))
+        policy = RoutingPolicy(
+            replace(
+                self.settings,
+                local_confidence_threshold=0.6,
+                hybrid_confidence_ratio=0.95,
+            )
+        )
+        high_hit = SearchHit(
+            self.rag,
+            0.85,
+            reasons=("dense", "sparse"),
+            lexical_score=0.3,
+        )
+        partial_hit = SearchHit(
+            self.rag,
+            0.46,
+            reasons=("dense", "sparse"),
+            lexical_score=0.3,
+        )
+        generic_agreement = SearchHit(
+            self.weather,
+            0.55,
+            reasons=("dense", "sparse"),
+            lexical_score=0.03,
+        )
         low_hit = SearchHit(self.weather, 0.1, reasons=("dense",))
         self.assertEqual(policy.decide([high_hit], allow_web=False).route, Route.LOCAL)
         self.assertEqual(policy.decide([low_hit], allow_web=False).route, Route.REFUSED)
+        self.assertEqual(policy.decide([partial_hit], allow_web=True).route, Route.HYBRID)
+        self.assertEqual(policy.decide([generic_agreement], allow_web=True).route, Route.WEB)
         self.assertEqual(policy.decide([low_hit], allow_web=True).route, Route.WEB)
 
     def test_empty_query_returns_no_hits(self) -> None:

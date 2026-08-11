@@ -12,12 +12,13 @@ class ThresholdCalibrationTests(unittest.TestCase):
             ConfidenceSample("negative-low", 0.1, False),
         ]
         report = calibrate_threshold(samples)
-        self.assertGreater(report.threshold, 0.4)
-        self.assertLessEqual(report.threshold, 0.7)
+        self.assertEqual(report.threshold, 0.55)
+        self.assertEqual(report.stability_margin, 0.15)
         self.assertEqual(report.false_positives, 0)
         self.assertEqual(report.false_negatives, 0)
         self.assertEqual(report.f1, 1.0)
         self.assertIn("RAG_LOCAL_CONFIDENCE", report.to_markdown())
+        self.assertIn("stability_margin", report.to_json())
 
     def test_false_positive_cost_prefers_conservative_threshold(self) -> None:
         samples = [

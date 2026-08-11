@@ -96,6 +96,26 @@ class RetrievalBenchmarkTests(unittest.TestCase):
         self.assertIn("rag.md", markdown)
         self.assertIn("local → refused", markdown)
 
+    def test_dataset_digest_depends_only_on_frozen_ground_truth(self) -> None:
+        cases = (
+            RetrievalBenchmarkCase("stable", "rag", (("rag.md", 3),), Route.LOCAL),
+        )
+        successful = run_retrieval_benchmark(
+            cases,
+            FakeRetriever({"rag": [hit("rag.md")]}),
+            RoutingPolicy(Settings()),
+            clock=iter((1.0, 1.001)).__next__,
+        )
+        failed = run_retrieval_benchmark(
+            cases,
+            FakeRetriever({}),
+            RoutingPolicy(Settings()),
+            clock=iter((2.0, 2.001)).__next__,
+        )
+
+        self.assertEqual(successful.report.dataset_digest, failed.report.dataset_digest)
+        self.assertNotEqual(successful.report.metrics, failed.report.metrics)
+
     def test_empty_cases_and_invalid_top_k_are_rejected(self) -> None:
         routing = RoutingPolicy(Settings())
         with self.assertRaises(ValueError):

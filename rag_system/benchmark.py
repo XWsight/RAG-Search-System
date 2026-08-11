@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,15 @@ class RetrievalBenchmarkCase:
     relevance: tuple[tuple[str, int], ...]
     expected_route: Route
     allow_web: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "case_id": self.case_id,
+            "question": self.question,
+            "relevance": dict(self.relevance),
+            "expected_route": self.expected_route.value,
+            "allow_web": self.allow_web,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +74,7 @@ class RetrievalPrediction:
             "missing_relevant_sources": list(self.missing_relevant_sources),
             "expected_route": self.expected_route.value,
             "predicted_route": self.predicted_route.value,
-            "confidence": round(self.confidence, 6),
+            "confidence": round(self.confidence, 12),
             "first_relevant_rank": self.first_relevant_rank,
             "route_correct": self.route_correct,
             "retrieval_correct": self.retrieval_correct,
@@ -307,8 +317,12 @@ def run_retrieval_benchmark(
             )
         )
 
+    report = replace(
+        evaluate_cases(evaluation_cases, top_k=top_k),
+        dataset_digest=_ground_truth_digest(cases),
+    )
     return RetrievalBenchmarkRun(
-        report=evaluate_cases(evaluation_cases, top_k=top_k),
+        report=report,
         predictions=tuple(predictions),
         latency=_latency_summary(latencies),
     )
@@ -350,6 +364,16 @@ def _unique_sources(hits: Sequence[SearchHit], limit: int) -> tuple[str, ...]:
         if len(sources) >= limit:
             break
     return tuple(sources)
+
+
+def _ground_truth_digest(cases: Sequence[RetrievalBenchmarkCase]) -> str:
+    canonical = json.dumps(
+        [case.to_dict() for case in cases],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def _nonempty(value: object, field: str, location: str) -> str:
