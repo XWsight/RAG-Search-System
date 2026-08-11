@@ -88,6 +88,34 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(policy.decide([generic_agreement], allow_web=True).route, Route.WEB)
         self.assertEqual(policy.decide([low_hit], allow_web=True).route, Route.WEB)
 
+    def test_routing_assessment_exposes_bounded_content_free_signals(self) -> None:
+        policy = RoutingPolicy(self.settings)
+        hits = (
+            SearchHit(
+                self.rag,
+                0.8,
+                reasons=("dense", "sparse"),
+                lexical_score=0.45,
+            ),
+            SearchHit(self.vector, 0.6, reasons=("dense",)),
+        )
+
+        assessment = policy.assess(hits, allow_web=False)
+        payload = assessment.signal.to_dict()
+
+        self.assertEqual(assessment.decision.route, Route.LOCAL)
+        self.assertEqual(payload["top_score"], 0.8)
+        self.assertEqual(payload["second_score"], 0.6)
+        self.assertEqual(payload["margin"], 0.2)
+        self.assertTrue(payload["ranker_agreement"])
+        self.assertEqual(payload["lexical_support"], 1.0)
+        self.assertAlmostEqual(payload["confidence"], assessment.decision.confidence)
+        self.assertNotIn("text", payload)
+
+        empty = policy.assess((), allow_web=False)
+        self.assertEqual(empty.signal.confidence, 0.0)
+        self.assertEqual(empty.decision.route, Route.REFUSED)
+
     def test_empty_query_returns_no_hits(self) -> None:
         self.assertEqual(self.retriever.search("  ", top_k=3), ())
 

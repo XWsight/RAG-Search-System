@@ -18,6 +18,7 @@ from rag_system.domain import SearchHit  # noqa: E402
 from rag_system.evaluation import DatasetValidationError  # noqa: E402
 from rag_system.ingestion import DocumentIngestor  # noqa: E402
 from rag_system.quality_gate import evaluate_quality_gate, load_quality_gate  # noqa: E402
+from rag_system.retrieval_analysis import build_retrieval_suite_report  # noqa: E402
 from rag_system.retrieval import RoutingPolicy  # noqa: E402
 from rag_system.sparse import BM25Index, SparseDocument  # noqa: E402
 from rag_system.text import lexical_relevance  # noqa: E402
@@ -80,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
+    suite = None
     settings = (
         load_settings(dotenv_path=arguments.dotenv)
         if arguments.dotenv is not None
@@ -118,12 +120,17 @@ def main(argv: list[str] | None = None) -> int:
         RoutingPolicy(settings),
         top_k=arguments.top_k,
     )
+    rendered_run = (
+        build_retrieval_suite_report(suite, run, split=arguments.split)
+        if suite is not None
+        else run
+    )
     if arguments.json_output:
-        _write(arguments.json_output, run.to_json())
+        _write(arguments.json_output, rendered_run.to_json())
     if arguments.markdown_output:
-        _write(arguments.markdown_output, run.to_markdown())
+        _write(arguments.markdown_output, rendered_run.to_markdown())
     if not arguments.json_output and not arguments.markdown_output:
-        print(run.to_markdown(), end="")
+        print(rendered_run.to_markdown(), end="")
     if arguments.quality_gate:
         try:
             result = evaluate_quality_gate(run, load_quality_gate(arguments.quality_gate))

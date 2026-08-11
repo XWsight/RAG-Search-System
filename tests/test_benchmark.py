@@ -72,7 +72,19 @@ class RetrievalBenchmarkTests(unittest.TestCase):
         self.assertAlmostEqual(run.latency.p99_ms, 29.8)
         self.assertIn("逐题结果", run.to_markdown())
         payload = json.loads(run.to_json())
-        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["schema_version"], 3)
+        self.assertEqual(
+            set(payload["predictions"][0]["routing_signal"]),
+            {
+                "top_score",
+                "second_score",
+                "margin",
+                "ranker_agreement",
+                "lexical_score",
+                "lexical_support",
+                "confidence",
+            },
+        )
         self.assertEqual(payload["report"]["case_count"], 2)
         self.assertEqual(payload["latency"]["p95_ms"], 29.0)
 

@@ -3,10 +3,17 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
+from rag_system.benchmark import run_retrieval_benchmark
 from rag_system.benchmark_suite import load_retrieval_suite, validate_suite_contract
+from rag_system.config import Settings
+from rag_system.domain import Chunk, SearchHit
 from rag_system.evaluation import DatasetValidationError
+from rag_system.evaluation_suite import EvaluationSuiteError
+from rag_system.retrieval import RoutingPolicy
+from rag_system.retrieval_analysis import build_retrieval_suite_report
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -218,6 +225,66 @@ class RetrievalBenchmarkSuiteTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             payload = json.loads(json_output.read_text(encoding="utf-8"))
             self.assertEqual(payload["report"]["case_count"], 60)
+            self.assertEqual(payload["evaluated_split"], "validation")
+            self.assertTrue(payload["slices"])
+            self.assertTrue(payload["route_confusion"])
+
+    def test_suite_run_reports_quality_slices_and_rejects_misalignment(self) -> None:
+        suite = load_retrieval_suite(PROJECT_ROOT / "evals" / "retrieval_suite.json")
+        source_by_question = {
+            case.question: tuple(source for source, _grade in case.relevance)
+            for case in suite.cases
+        }
+
+        class PerfectRetriever:
+            def search(self, query: str, *, top_k: int):
+                return tuple(
+                    SearchHit(
+                        Chunk(source, source, source, "相关资料", 0, 0, 4),
+                        0.95,
+                        dense_rank=rank,
+                        sparse_rank=rank,
+                        reasons=("dense", "sparse"),
+                        lexical_score=1.0,
+                    )
+                    for rank, source in enumerate(source_by_question[query], start=1)
+                )[:top_k]
+
+        benchmark = run_retrieval_benchmark(
+            suite.cases,
+            PerfectRetriever(),
+            RoutingPolicy(Settings()),
+        )
+        report = build_retrieval_suite_report(suite, benchmark)
+
+        self.assertEqual(len(report.slices), 21)
+        self.assertEqual(report.evaluated_split, "all")
+        self.assertTrue(all(item.passed_case_count == item.case_count for item in report.slices))
+        self.assertTrue(
+            all(item.routing_signals.top_score.p50 >= 0.0 for item in report.slices)
+        )
+        self.assertEqual(
+            report.slices[0].to_dict()["routing_signals"]["ranker_agreement_rate"],
+            0.8,
+        )
+        self.assertIn("路由混淆矩阵", report.to_markdown())
+        self.assertIn("margin p50", report.to_markdown())
+        self.assertIn("N/A", report.to_markdown())
+        self.assertEqual(json.loads(report.to_json())["report"]["case_count"], 200)
+
+        with self.assertRaisesRegex(EvaluationSuiteError, "prediction order"):
+            build_retrieval_suite_report(
+                suite,
+                replace(
+                    benchmark,
+                    predictions=tuple(reversed(benchmark.predictions)),
+                ),
+            )
+        with self.assertRaisesRegex(EvaluationSuiteError, "counts do not match"):
+            build_retrieval_suite_report(
+                suite,
+                replace(benchmark, report=replace(benchmark.report, case_count=199)),
+            )
 
     class _SuiteContext:
         def __init__(self, payload: dict) -> None:

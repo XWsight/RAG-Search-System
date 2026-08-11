@@ -19,7 +19,7 @@ from rag_system.evaluation import (
     evaluate_cases,
 )
 from rag_system.ports import Retriever
-from rag_system.retrieval import RoutingPolicy
+from rag_system.retrieval import RoutingPolicy, RoutingSignal
 
 
 _CASE_FIELDS = frozenset(
@@ -57,6 +57,7 @@ class RetrievalPrediction:
     first_relevant_rank: int | None
     route_correct: bool
     latency_ms: float
+    routing_signal: RoutingSignal
 
     @property
     def retrieval_correct(self) -> bool:
@@ -80,6 +81,7 @@ class RetrievalPrediction:
             "retrieval_correct": self.retrieval_correct,
             "passed": self.passed,
             "latency_ms": round(self.latency_ms, 6),
+            "routing_signal": self.routing_signal.to_dict(),
         }
 
 
@@ -111,14 +113,16 @@ class RetrievalBenchmarkRun:
     predictions: tuple[RetrievalPrediction, ...]
     latency: RetrievalLatency
 
-    def to_json(self) -> str:
-        payload = {
-            "schema_version": 2,
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 3,
             "report": self.report.to_dict(),
             "latency": self.latency.to_dict(),
             "predictions": [prediction.to_dict() for prediction in self.predictions],
         }
-        return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
     def to_markdown(self) -> str:
         latency = self.latency
@@ -267,7 +271,8 @@ def run_retrieval_benchmark(
     for case in cases:
         started_at = clock()
         hits = tuple(retriever.search(case.question, top_k=top_k))
-        decision = routing.decide(hits, allow_web=case.allow_web)
+        assessment = routing.assess(hits, allow_web=case.allow_web)
+        decision = assessment.decision
         finished_at = clock()
         if not all(math.isfinite(value) for value in (started_at, finished_at)):
             raise ValueError("clock must return finite values")
@@ -301,6 +306,7 @@ def run_retrieval_benchmark(
                 first_relevant_rank=first_relevant_rank,
                 route_correct=decision.route == case.expected_route,
                 latency_ms=latency_ms,
+                routing_signal=assessment.signal,
             )
         )
         evaluation_cases.append(
@@ -319,7 +325,7 @@ def run_retrieval_benchmark(
 
     report = replace(
         evaluate_cases(evaluation_cases, top_k=top_k),
-        dataset_digest=_ground_truth_digest(cases),
+        dataset_digest=retrieval_dataset_digest(cases),
     )
     return RetrievalBenchmarkRun(
         report=report,
@@ -366,7 +372,9 @@ def _unique_sources(hits: Sequence[SearchHit], limit: int) -> tuple[str, ...]:
     return tuple(sources)
 
 
-def _ground_truth_digest(cases: Sequence[RetrievalBenchmarkCase]) -> str:
+def retrieval_dataset_digest(cases: Sequence[RetrievalBenchmarkCase]) -> str:
+    """Return the stable digest binding a run to retrieval ground truth."""
+
     canonical = json.dumps(
         [case.to_dict() for case in cases],
         ensure_ascii=False,
@@ -392,6 +400,7 @@ __all__ = [
     "RetrievalLatency",
     "RetrievalPrediction",
     "load_retrieval_benchmark",
+    "retrieval_dataset_digest",
     "retrieval_case_from_mapping",
     "run_retrieval_benchmark",
 ]

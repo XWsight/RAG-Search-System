@@ -124,6 +124,8 @@ manifest 使用严格 JSON、精确字段和显式最低覆盖要求。校验会
 
 可用 `--split development|validation|test` 单独运行来源隔离分段。分段只索引该 split 的文档，因此适合开发和误差分析；全套运行同时加入其余文档作为干扰项，结果不能与分段数字直接混为一谈。200 个 case 中包含同一家族的语义改写，汇报时必须同时写明“200 questions / 50 semantic families”，不得宣称 200 个独立事实。
 
+当输入是 governed suite 时，BM25 与 Hybrid 两个 runner 都会生成同一份诊断契约：总体结果、路由混淆矩阵，以及 split、category、difficulty、expected route 四类切片。逐题预测同时记录首名/次名分数、分差、dense/sparse 一致性、词法原始分数/饱和支撑度和最终置信度；这些字段不包含问题或文档正文，可用于聚合和失败定位。报告 schema `3` 是增加字段后的版本，读取方不得假设未知字段不存在。
+
 ## 4. 真实 hybrid benchmark
 
 先安装运行依赖；首次运行可能下载 Embedding 模型。该命令只执行本地索引和检索，不调用智谱 Chat 或 Web Search：
@@ -151,6 +153,8 @@ python scripts/benchmark_retrieval.py evals/retrieval_cases.jsonl `
 当前 18 题 Hybrid 开发基线的 Recall@5、MRR@5、nDCG@5 和路由准确率均为 `1.0`，并由 [`hybrid-development.json`](../evals/gates/hybrid-development.json) 冻结。它需要实际加载 Embedding 模型，是发布前手动门禁；默认 CI 只运行不依赖模型下载的 BM25 门禁。该结果来自本地 `BAAI/bge-small-zh-v1.5`、当前依赖与默认配置，不代表独立 blind test、生成质量或生产 SLA。不得引用 BM25 数字作为 Hybrid 成绩，也不得把这 18 题的满分外推为真实业务准确率。
 
 同一环境首次运行 200 题全语料 Hybrid 得到 Recall@5 `0.984375`、MRR@5 `0.953646`、nDCG@5 `0.953695`、路由准确率 `0.885000`，由 [`hybrid-foundation.json`](../evals/gates/hybrid-foundation.json) 冻结为手动下限。它比 BM25 的路由准确率高，但排序指标略低，说明稠密候选和 RRF 当前并非全面增益。后续只能用 development 开发、validation 选参数，再在冻结 test 上做最终复核；不能根据全套逐题结果反复改写 test。
+
+同一默认模型和配置的来源隔离运行中，development/validation 的 Recall@5 都为 `1.0`，路由准确率分别为 `0.925`/`0.95`。9 个路由失败均已召回正确来源，但其置信度与无答案样例重叠。仅降低阈值会削弱误答保护，因此本轮保留生产决策；下一步先扩充通用 hard negatives，再只用 development/validation 比较重排器或新的校准特征，冻结后才运行 test。
 
 ## 路由阈值校准
 

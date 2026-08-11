@@ -81,6 +81,7 @@ files = [
   "rag_system/ports.py",
   "rag_system/research.py",
   "rag_system/retrieval.py",
+  "rag_system/retrieval_analysis.py",
   "rag_system/security.py",
   "rag_system/service.py",
   "rag_system/submission.py",
