@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import stat
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -24,6 +27,43 @@ class DependencyUnavailableError(RuntimeError):
 
 class IndexIntegrityError(RuntimeError):
     """Raised when a persisted collection does not match its manifest."""
+
+
+class RetrievalProfile(StrEnum):
+    """Standard retrieval stages used by production and ablation runs."""
+
+    DENSE = "dense"
+    SPARSE = "sparse"
+    FUSION = "fusion"
+    FUSION_DIVERSE = "fusion-diverse"
+    FUSION_DIVERSE_RERANK = "fusion-diverse-rerank"
+
+
+@dataclass(frozen=True, slots=True)
+class FusionWeights:
+    """Normalized dense, BM25, lexical, and reciprocal-rank contributions."""
+
+    dense: float = 0.55
+    sparse: float = 0.0
+    lexical: float = 0.25
+    rrf: float = 0.20
+
+    def __post_init__(self) -> None:
+        values = (self.dense, self.sparse, self.lexical, self.rrf)
+        if not all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in values):
+            raise TypeError("fusion weights must be real numbers")
+        if not all(math.isfinite(value) and value >= 0 for value in values):
+            raise ValueError("fusion weights must be finite and non-negative")
+        if not math.isclose(sum(values), 1.0, rel_tol=0.0, abs_tol=1e-9):
+            raise ValueError("fusion weights must sum to one")
+
+    def to_dict(self) -> dict[str, float]:
+        return {
+            "dense": self.dense,
+            "sparse": self.sparse,
+            "lexical": self.lexical,
+            "rrf": self.rrf,
+        }
 
 
 class _ChromaDocument(Protocol):
@@ -292,7 +332,7 @@ class ChromaIndexRepository(IndexRepository):
 
 
 class HybridRetriever:
-    """Fuse dense and BM25 candidates, then compute an interpretable score."""
+    """Run one explicit dense/sparse/fusion profile over a shared index."""
 
     def __init__(
         self,
@@ -301,10 +341,26 @@ class HybridRetriever:
         settings: Settings,
         *,
         reranker: Reranker | None = None,
+        profile: RetrievalProfile | str | None = None,
+        fusion_weights: FusionWeights | None = None,
     ) -> None:
         self.vector_index = vector_index
         self.settings = settings.validate()
         self.reranker = reranker
+        if profile is None:
+            self.profile = (
+                RetrievalProfile.FUSION_DIVERSE_RERANK
+                if reranker is not None
+                else RetrievalProfile.FUSION_DIVERSE
+            )
+        else:
+            try:
+                self.profile = RetrievalProfile(profile)
+            except (TypeError, ValueError):
+                raise ValueError("invalid retrieval profile") from None
+        if self.profile is RetrievalProfile.FUSION_DIVERSE_RERANK and reranker is None:
+            raise ValueError("rerank profile requires a reranker")
+        self.fusion_weights = fusion_weights or FusionWeights()
         self._chunks = {chunk.chunk_id: chunk for chunk in chunks}
         self._sparse = BM25Index(
             SparseDocument(document_id=chunk.chunk_id, text=chunk.text) for chunk in chunks
@@ -317,10 +373,34 @@ class HybridRetriever:
         if top_k < 1:
             raise ValueError("top_k must be positive")
 
+        if self.profile is RetrievalProfile.DENSE:
+            return tuple(
+                self.vector_index.search(question, top_k=self.settings.dense_candidates)
+            )[:top_k]
+
+        sparse_hits = self._sparse.search(question, top_k=self.settings.sparse_candidates)
+        if self.profile is RetrievalProfile.SPARSE:
+            sparse_candidates: list[SearchHit] = []
+            for rank, hit in enumerate(sparse_hits, start=1):
+                chunk = self._chunks.get(hit.document_id)
+                if chunk is None:
+                    continue
+                lexical_score = lexical_relevance(question, hit.text)
+                bounded_bm25_score = hit.score / (hit.score + 1.0)
+                sparse_candidates.append(
+                    SearchHit(
+                        chunk=chunk,
+                        score=bounded_bm25_score,
+                        sparse_rank=rank,
+                        reasons=("sparse",),
+                        lexical_score=lexical_score,
+                    )
+                )
+            return tuple(sparse_candidates[:top_k])
+
         dense_hits = tuple(
             self.vector_index.search(question, top_k=self.settings.dense_candidates)
         )
-        sparse_hits = self._sparse.search(question, top_k=self.settings.sparse_candidates)
         dense_by_id = {hit.chunk.chunk_id: hit for hit in dense_hits}
         sparse_by_id = {hit.document_id: hit for hit in sparse_hits}
         dense_ids = [hit.chunk.chunk_id for hit in dense_hits]
@@ -336,9 +416,20 @@ class HybridRetriever:
             dense_hit = dense_by_id.get(item.item_id)
             sparse_hit = sparse_by_id.get(item.item_id)
             dense_score = dense_hit.score if dense_hit else 0.0
+            sparse_score = (
+                sparse_hit.score / (sparse_hit.score + 1.0)
+                if sparse_hit is not None
+                else 0.0
+            )
             lexical_score = lexical_relevance(question, chunk.text)
             rrf_score = min(1.0, item.score / maximum_rrf)
-            final_score = min(1.0, 0.55 * dense_score + 0.25 * lexical_score + 0.20 * rrf_score)
+            final_score = min(
+                1.0,
+                self.fusion_weights.dense * dense_score
+                + self.fusion_weights.sparse * sparse_score
+                + self.fusion_weights.lexical * lexical_score
+                + self.fusion_weights.rrf * rrf_score,
+            )
             reasons = tuple(
                 reason
                 for reason, present in (("dense", dense_hit is not None), ("sparse", sparse_hit is not None))
@@ -357,7 +448,8 @@ class HybridRetriever:
             )
 
         candidates.sort(key=lambda hit: (-hit.score, hit.chunk.chunk_id))
-        if self.reranker is not None:
+        if self.profile is RetrievalProfile.FUSION_DIVERSE_RERANK:
+            assert self.reranker is not None
             try:
                 candidates = list(
                     self.reranker.rerank(
@@ -370,7 +462,12 @@ class HybridRetriever:
                 # Reranking is an optional quality layer; first-stage results
                 # remain usable if its model is unavailable at runtime.
                 pass
-        return tuple(self._diversify(candidates, top_k))
+        if self.profile in {
+            RetrievalProfile.FUSION_DIVERSE,
+            RetrievalProfile.FUSION_DIVERSE_RERANK,
+        }:
+            candidates = self._diversify(candidates, top_k)
+        return tuple(candidates[:top_k])
 
     @staticmethod
     def _diversify(candidates: Sequence[SearchHit], top_k: int) -> list[SearchHit]:

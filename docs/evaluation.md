@@ -156,6 +156,28 @@ python scripts/benchmark_retrieval.py evals/retrieval_cases.jsonl `
 
 同一默认模型和配置的来源隔离运行中，development 88 题和 validation 68 题的 Recall@5、路由准确率均为 `1.0`。配置冻结后的首次 test 得到 Recall@5 `1.0`、MRR `0.989583`、nDCG `0.992311`、路由 `0.916667`，其中医疗诊断和密钥提取请求暴露能力边界缺失。修复后该公开 test 已被消费，只能作为回归集；后续可信泛化结论需要新的、未参与开发且最好由独立标注者维护的外部盲测集。
 
+### 检索消融实验
+
+`scripts/ablate_retrieval.py` 复用生产 `HybridRetriever` 和同一个已构建向量索引，不复制一套仅用于评测的融合实现。标准 profile 依次隔离：
+
+- `dense`：仅稠密候选；
+- `sparse`：仅 BM25 候选及其有界分数；
+- `fusion`：稠密、BM25、词法覆盖和 RRF 融合；
+- `fusion-diverse`：融合后增加每来源最多两个 chunk；
+- `fusion-diverse-rerank`：在前述候选上执行显式配置的 CrossEncoder。
+
+运行器按 repetition 轮转变体顺序，降低固定先后顺序和热缓存偏差；同一变体若改变检索来源、路由或置信度，会失败而不是对不确定结果求平均。JSON 报告包含每个 profile 的完整逐题预测、跨重复延迟分位数、相对基线指标差、修复/新增失败 case ID、索引时间，以及不允许出现 key/token/secret/password/credential 的配置摘要。延迟仍是单进程同机相对证据，不替代并发压测。
+
+权重候选格式为 `NAME:DENSE:SPARSE:LEXICAL:RRF`，四项必须非负、有限且和为 1。正确流程是：
+
+1. 在 development 同时运行基线和多个候选；
+2. 淘汰 Recall、路由或关键切片退化的候选；
+3. 只把 development 选出的唯一候选带入 validation；
+4. validation 无退化但没有提升时，仍保持生产默认值；
+5. 只有新的外部盲测提供增益证据后，才变更默认权重并冻结新门禁。
+
+2026-08-11 的权重消融中，默认 `0.55/0.00/0.25/0.20` 与 BM25 强度 5% 候选 `0.50/0.05/0.25/0.20` 在 development 的 Recall/路由均为 `1.0`，候选 MRR `0.984375` 相对默认 `0.981771` 略升；validation 的 Recall、MRR、nDCG 和路由完全相同。10% 及以上 BM25 强度在 development 开始把普通无关问题误路由为本地，因此淘汰。该证据支持保留默认配置，而不是宣称 5% 候选胜出。
+
 ## 路由阈值校准
 
 用真实 hybrid run JSON 校准，而不是 sample fixture 或手工预测：

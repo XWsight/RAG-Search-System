@@ -32,11 +32,13 @@
 - 路由置信度改为用真实词法覆盖调节 dense/sparse 一致性奖励，收紧弱本地证据的混合区间；18 题对抗开发集上的 Hybrid 路由由 `0.9444` 提升为 `1.0000`。
 - 云端回答由自由文本引用重构为严格的原子结论—证据 JSON 契约；未知/重复/缺失引用、含混拒答和截断输出整体失败关闭，API 暴露可审计的 claim 映射。结构化调用关闭 Thinking 与随机采样，并只为可修复协议错误提供一次不回显原输出的有界重试。
 - 将 `pypdf` 升级到 `6.15.0`；对唯一无修复的 Chroma 公告 `PYSEC-2026-311` 实行精确例外，并在 `2026-09-01` 关闭式失效。
+- 新增真实检索消融平台：在共享索引上隔离 Dense、BM25、融合、来源多样化和可选重排，以轮转顺序重复执行，输出配置摘要、相对延迟、指标差和逐题新增/修复失败，并拒绝非确定预测或敏感配置字段。
 
 ### Changed
 
 - 检索与回答评测套件统一使用共享的严格 JSON、规范化去重、内容摘要和冻结契约基础，避免两套治理逻辑继续分叉。
 - 将查询能力意图从检索器中拆到独立路由层：实时信息、未授权外部动作和受限请求先执行可审计的失败关闭策略，普通知识问题再应用 `0.59` 的证据阈值；216 题全语料 Hybrid 路由基线提升到 `0.9907`。
+- 将检索候选阶段重构为显式 profile，并把归一化 BM25 强度作为默认权重为零的独立融合信号。development/validation 消融没有提供足够证据更换生产权重，因此默认行为保持不变。
 
 - Refactored platform workflows onto explicit repository, document-store, job-executor, index-lifecycle, and knowledge-service ports. Production readiness now composes fail-closed probes for catalog, document, job, and vector storage; the 28-module architecture spine is protected by strict mypy and dependency-direction gates.
 

@@ -21,6 +21,7 @@ FRAMEWORK_NEUTRAL_MODULES = (
     "rag_system/indexing.py",
     "rag_system/health.py",
     "rag_system/job_contracts.py",
+    "rag_system/retrieval_experiments.py",
 )
 FORBIDDEN_FRAMEWORK_PREFIXES = (
     "chromadb",

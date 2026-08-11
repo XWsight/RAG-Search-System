@@ -334,11 +334,17 @@ def run_retrieval_benchmark(
     return RetrievalBenchmarkRun(
         report=report,
         predictions=tuple(predictions),
-        latency=_latency_summary(latencies),
+        latency=summarize_retrieval_latency(latencies),
     )
 
 
-def _latency_summary(values: Sequence[float]) -> RetrievalLatency:
+def summarize_retrieval_latency(values: Sequence[float]) -> RetrievalLatency:
+    """Summarize one or more finite, non-negative latency samples."""
+
+    if not values:
+        raise ValueError("latency values cannot be empty")
+    if not all(math.isfinite(value) and value >= 0 for value in values):
+        raise ValueError("latency values must be finite and non-negative")
     ordered = sorted(values)
     total = sum(ordered)
     return RetrievalLatency(
@@ -407,4 +413,5 @@ __all__ = [
     "retrieval_dataset_digest",
     "retrieval_case_from_mapping",
     "run_retrieval_benchmark",
+    "summarize_retrieval_latency",
 ]

@@ -185,6 +185,27 @@ python scripts\benchmark_retrieval.py evals\retrieval_cases.jsonl `
 
 按来源隔离的本地实测中，development 88 题为 Recall@5 `1.0000`、MRR@5 `0.9818`、nDCG@5 `0.9766`、路由 `1.0000`；validation 68 题为 `1.0000`、`0.9792`、`0.9812`、`1.0000`。首次冻结后的 test 得到 Recall@5 `1.0000`、MRR@5 `0.9896`、nDCG@5 `0.9923`、路由 `0.9167`，暴露医疗诊断和密钥提取能力边界后，该公开 test 已被消费并降级为回归集；后续改进不得继续把它称为无偏盲测。
 
+检索消融运行器在同一个索引上比较 Dense、BM25、融合、来源多样化和可选重排，并以轮转顺序重复执行，拒绝同一变体在重复运行中产生不同预测。报告绑定 suite、ground truth 和无敏感配置摘要，列出质量差值、相对延迟以及新增/修复的 case ID：
+
+```powershell
+python scripts\ablate_retrieval.py evals\retrieval_suite.json `
+  --split development `
+  --repetitions 3 `
+  --json-output reports\ablation-development.json `
+  --markdown-output reports\ablation-development.md
+```
+
+融合权重实验必须给四个归一化分量 `dense:sparse:lexical:rrf`，先在 development 筛选，再把唯一候选带到 validation：
+
+```powershell
+python scripts\ablate_retrieval.py evals\retrieval_suite.json `
+  --split development `
+  --profiles fusion-diverse `
+  --fusion-weight bm25-05:0.50:0.05:0.25:0.20
+```
+
+当前实验中，5% BM25 强度候选在 development 保持 Recall/路由不变并把 MRR 从 `0.9818` 提升到 `0.9844`，但在 validation 的四项质量指标均与默认方案相同。由于没有独立盲测增益证据，生产默认权重仍保持 `0.55 dense + 0.00 sparse + 0.25 lexical + 0.20 RRF`；不能把“验证集无退化”包装成“新方案已证明更优”。实验延迟只用于同机相对比较，不是 SLA。
+
 云端生成不再把引用关系藏在自由文本中。模型必须返回由原子 `claims`、每条结论的 `citation_ids` 和明确的 `insufficient` 状态组成的 JSON；供应商适配器与应用服务会分别校验同一证据契约，API 同时返回可直接审计的 `claims` 映射和兼容展示用文本。该机制保证引用 ID 存在且每条生成结论都有归因，但**不等于语义蕴含或事实正确性已经被证明**。
 
 结构化回答另有独立的真实模型基准，不复用检索成绩：
@@ -242,6 +263,7 @@ rag_system/
   benchmark.py        # 检索指标、逐题诊断与延迟分位数
   benchmark_suite.py  # 评测家族、覆盖矩阵、来源隔离和泄漏校验
   retrieval_analysis.py # 检索切片、路由混淆矩阵和置信信号诊断
+  retrieval_experiments.py # 多变体轮转消融、确定性检查和逐题增益/退化报告
   evaluation_suite.py # 检索/回答套件共享的严格 schema、摘要与冻结契约
   answer_suite.py     # 结构化回答证据、事实、split 和风险覆盖治理
   answer_analysis.py  # 回答质量切片、失败定位和可审计报告

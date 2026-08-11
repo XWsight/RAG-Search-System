@@ -7,7 +7,12 @@ from pathlib import Path
 
 from rag_system.config import Settings
 from rag_system.domain import Chunk, IndexRef, Route, SearchHit
-from rag_system.retrieval import ChromaIndexRepository, HybridRetriever
+from rag_system.retrieval import (
+    ChromaIndexRepository,
+    FusionWeights,
+    HybridRetriever,
+    RetrievalProfile,
+)
 from rag_system.routing import RoutingPolicy
 
 
@@ -21,8 +26,10 @@ class FakeVectorIndex:
         self.chunks = chunks
         self.scores = scores
         self.closed = False
+        self.search_calls = 0
 
     def search(self, query: str, *, top_k: int):
+        self.search_calls += 1
         ordered = sorted(self.chunks, key=lambda chunk: -self.scores.get(chunk.chunk_id, 0.0))
         return tuple(
             SearchHit(chunk, self.scores.get(chunk.chunk_id, 0.0), dense_rank=rank, reasons=("dense",))
@@ -119,6 +126,114 @@ class RetrievalTests(unittest.TestCase):
 
     def test_empty_query_returns_no_hits(self) -> None:
         self.assertEqual(self.retriever.search("  ", top_k=3), ())
+
+    def test_profiles_isolate_dense_sparse_and_fusion_stages(self) -> None:
+        vector_index = FakeVectorIndex(
+            [self.rag, self.vector, self.weather],
+            {"rag": 0.75, "vector": 0.55, "weather": 0.2},
+        )
+        dense = HybridRetriever(
+            vector_index,
+            [self.rag, self.vector, self.weather],
+            self.settings,
+            profile=RetrievalProfile.DENSE,
+        )
+        sparse = HybridRetriever(
+            vector_index,
+            [self.rag, self.vector, self.weather],
+            self.settings,
+            profile=RetrievalProfile.SPARSE,
+        )
+        fusion = HybridRetriever(
+            vector_index,
+            [self.rag, self.vector, self.weather],
+            self.settings,
+            profile=RetrievalProfile.FUSION,
+        )
+
+        self.assertEqual(dense.search("RAG", top_k=1)[0].reasons, ("dense",))
+        dense_calls = vector_index.search_calls
+        self.assertEqual(sparse.search("RAG", top_k=1)[0].reasons, ("sparse",))
+        self.assertEqual(vector_index.search_calls, dense_calls)
+        self.assertEqual(
+            set(fusion.search("RAG", top_k=1)[0].reasons),
+            {"dense", "sparse"},
+        )
+
+    def test_source_diversification_is_an_explicit_ablation_stage(self) -> None:
+        first = make_chunk("a1", "same", "共同主题 第一段")
+        second = make_chunk("a2", "same", "共同主题 第二段")
+        third = make_chunk("a3", "same", "共同主题 第三段")
+        other = make_chunk("b1", "other", "共同主题 其他资料")
+        chunks = [first, second, third, other]
+        vector_index = FakeVectorIndex(
+            chunks,
+            {"a1": 0.9, "a2": 0.8, "a3": 0.75, "b1": 0.7},
+        )
+        fusion = HybridRetriever(
+            vector_index,
+            chunks,
+            self.settings,
+            profile=RetrievalProfile.FUSION,
+        )
+        diverse = HybridRetriever(
+            vector_index,
+            chunks,
+            self.settings,
+            profile=RetrievalProfile.FUSION_DIVERSE,
+        )
+
+        self.assertEqual(
+            [hit.chunk.document_id for hit in fusion.search("共同主题", top_k=3)],
+            ["same", "same", "same"],
+        )
+        self.assertEqual(
+            [hit.chunk.document_id for hit in diverse.search("共同主题", top_k=3)],
+            ["same", "same", "other"],
+        )
+
+    def test_rerank_profile_requires_an_actual_reranker(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires a reranker"):
+            HybridRetriever(
+                FakeVectorIndex([self.rag], {"rag": 0.8}),
+                [self.rag],
+                self.settings,
+                profile=RetrievalProfile.FUSION_DIVERSE_RERANK,
+            )
+        with self.assertRaisesRegex(ValueError, "invalid retrieval profile"):
+            HybridRetriever(
+                FakeVectorIndex([self.rag], {"rag": 0.8}),
+                [self.rag],
+                self.settings,
+                profile="unknown",
+            )
+
+    def test_fusion_weights_are_normalized_and_can_change_ranking(self) -> None:
+        dense_first = make_chunk("dense", "dense", "共同主题")
+        lexical_first = make_chunk("lexical", "lexical", "共同主题 精确术语")
+        vector_index = FakeVectorIndex(
+            [dense_first, lexical_first],
+            {"dense": 0.95, "lexical": 0.4},
+        )
+        retriever = HybridRetriever(
+            vector_index,
+            [dense_first, lexical_first],
+            self.settings,
+            profile=RetrievalProfile.FUSION,
+            fusion_weights=FusionWeights(dense=0.0, sparse=0.0, lexical=1.0, rrf=0.0),
+        )
+
+        self.assertEqual(
+            retriever.search("精确术语", top_k=1)[0].chunk.chunk_id,
+            "lexical",
+        )
+        for weights in (
+            (float("nan"), 0.0, 0.5, 0.5),
+            (-0.1, 0.0, 0.6, 0.5),
+            (0.2, 0.2, 0.2, 0.2),
+        ):
+            with self.subTest(weights=weights), self.assertRaises(ValueError):
+                FusionWeights(*weights)
 
     def test_persistent_repository_healthcheck_validates_storage_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

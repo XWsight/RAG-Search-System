@@ -7,6 +7,7 @@ from rag_system.benchmark import (
     RetrievalBenchmarkCase,
     load_retrieval_benchmark,
     run_retrieval_benchmark,
+    summarize_retrieval_latency,
 )
 from rag_system.config import Settings
 from rag_system.domain import Chunk, Route, SearchHit
@@ -148,6 +149,11 @@ class RetrievalBenchmarkTests(unittest.TestCase):
                 RoutingPolicy(Settings()),
                 clock=iter((2.0, 1.0)).__next__,
             )
+
+        with self.assertRaisesRegex(ValueError, "cannot be empty"):
+            summarize_retrieval_latency([])
+        with self.assertRaisesRegex(ValueError, "finite"):
+            summarize_retrieval_latency([float("inf")])
 
 
 if __name__ == "__main__":
