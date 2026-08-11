@@ -70,16 +70,16 @@ def fuse_query_hits(
     maximum_rrf = max(1, len(rank_ids)) / 61
     results: list[SearchHit] = []
     for item in fused:
-        hit = best_by_id.get(item.item_id)
-        if hit is None:
+        selected_hit = best_by_id.get(item.item_id)
+        if selected_hit is None:
             continue
         rrf_score = min(1.0, item.score / maximum_rrf)
-        score = min(1.0, 0.55 * hit.score + 0.45 * rrf_score)
+        score = min(1.0, 0.55 * selected_hit.score + 0.45 * rrf_score)
         results.append(
             replace(
-                hit,
+                selected_hit,
                 score=score,
-                reasons=tuple(dict.fromkeys((*hit.reasons, "multi_query"))),
+                reasons=tuple(dict.fromkeys((*selected_hit.reasons, "multi_query"))),
             )
         )
     results.sort(key=lambda hit: (-hit.score, hit.chunk.chunk_id))

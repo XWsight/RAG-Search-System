@@ -1,5 +1,6 @@
 -r requirements.txt
 coverage[toml]==7.15.2
 httpx2==2.7.0
+mypy==2.3.0
 pip-audit==2.10.1
 ruff==0.15.22

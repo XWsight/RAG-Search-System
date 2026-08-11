@@ -332,7 +332,7 @@ class SecureDocumentLoader:
                     "读取 PDF 需要安装可选依赖 pypdf。"
                 ) from None
 
-            def strict_pdf_reader(candidate: Path):
+            def strict_pdf_reader(candidate: Path) -> Any:
                 return PdfReader(str(candidate), strict=True)
 
             factory = strict_pdf_reader

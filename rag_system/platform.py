@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 import threading
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import Any
 
 from rag_system.application import (
     IdempotencyInProgressError,
@@ -19,9 +19,15 @@ from rag_system.application import (
     PlatformValidationError,
     UploadDocument,
 )
+from rag_system.application_ports import (
+    DocumentStore,
+    IdempotencyRepository,
+    JobExecutor,
+    KnowledgeBaseRepository,
+    KnowledgeService,
+)
 from rag_system.assets import KnowledgeBaseAssets
 from rag_system.catalog import (
-    KnowledgeBaseCatalog,
     KnowledgeBaseErrorCode,
     KnowledgeBaseRecord,
     KnowledgeBaseStatus,
@@ -29,17 +35,15 @@ from rag_system.catalog import (
 from rag_system.config import Settings
 from rag_system.coordination import ResourceJobRegistry, ResourceLockPool
 from rag_system.domain import AnswerRequest, AnswerResult
-from rag_system.file_store import FileStoreError, TenantFileStore
+from rag_system.file_store import FileStoreError
 from rag_system.idempotency import (
     IdempotencyConflictError,
-    IdempotencyStore,
     IdempotencyUnavailableError,
 )
 from rag_system.jobs import (
     CancellationToken,
     JobError,
     JobId,
-    JobManager,
     JobNotFoundError,
     JobSnapshot,
 )
@@ -47,9 +51,6 @@ from rag_system.indexing import KnowledgeBaseIndexer
 from rag_system.metrics import OperationalMetrics, create_operational_metrics
 from rag_system.submission import UploadBatchPreparer
 from rag_system.tenancy import Principal
-
-if TYPE_CHECKING:
-    from rag_system.service import RagService
 
 
 class RagPlatform:
@@ -64,11 +65,11 @@ class RagPlatform:
         self,
         *,
         settings: Settings,
-        service: RagService,
-        catalog: KnowledgeBaseCatalog,
-        file_store: TenantFileStore,
-        jobs: JobManager,
-        idempotency: IdempotencyStore,
+        service: KnowledgeService,
+        catalog: KnowledgeBaseRepository,
+        file_store: DocumentStore,
+        jobs: JobExecutor,
+        idempotency: IdempotencyRepository,
         metrics: OperationalMetrics | None = None,
         document_id_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
     ) -> None:
@@ -145,15 +146,19 @@ class RagPlatform:
                     )
                 self._recover_idempotency_binding(principal, record, current_job)
                 return KnowledgeBaseSubmission(record, current_job, replayed=True)
-            record = self.catalog.get(principal, reservation.resource_id)
+            bound_resource_id = reservation.resource_id
+            bound_job_id = reservation.job_id
+            if bound_resource_id is None or bound_job_id is None:
+                raise PlatformIntegrityError("bound idempotency result is incomplete")
+            record = self.catalog.get(principal, bound_resource_id)
             current_job = self._job_for_resource(principal, record.resource_id)
             if current_job is None:
                 try:
                     self.jobs.get(
                         principal.tenant_id.value,
-                        JobId(reservation.job_id),
+                        JobId(bound_job_id),
                     )
-                    current_job = JobId(reservation.job_id)
+                    current_job = JobId(bound_job_id)
                 except JobNotFoundError:
                     current_job = None
             if (
@@ -182,10 +187,10 @@ class RagPlatform:
                 replayed=True,
             )
 
-        record: KnowledgeBaseRecord | None = None
+        created_record: KnowledgeBaseRecord | None = None
         job_id: JobId | None = None
         try:
-            record = self.catalog.create(
+            created_record = self.catalog.create(
                 principal,
                 display_name,
                 idempotency_reservation_id=reservation.reservation_id,
@@ -195,30 +200,30 @@ class RagPlatform:
                 uploads,
                 new_document_id=self._uploads.new_document_id,
             )
-            record = self.catalog.replace_manifest(
+            created_record = self.catalog.replace_manifest(
                 principal,
-                record.resource_id,
+                created_record.resource_id,
                 tuple(item.manifest for item in planned),
             )
             self._assets.store(principal, planned)
             job_id = self._submit_indexing(
                 principal,
-                record.resource_id,
+                created_record.resource_id,
                 idempotency_key=reservation.reservation_id,
             )
             self.idempotency.bind_result(
                 principal,
                 reservation.reservation_id,
-                record.resource_id,
+                created_record.resource_id,
                 job_id.value,
             )
         except Exception:
-            if record is not None:
+            if created_record is not None:
                 if job_id is None:
-                    self._rollback_create(principal, record)
+                    self._rollback_create(principal, created_record)
                 else:
                     try:
-                        self.delete_knowledge_base(principal, record.resource_id)
+                        self.delete_knowledge_base(principal, created_record.resource_id)
                     except Exception:
                         pass
             try:
@@ -226,9 +231,9 @@ class RagPlatform:
             except Exception:
                 pass
             raise
-        if record is None or job_id is None:
+        if created_record is None or job_id is None:
             raise PlatformUnavailableError("knowledge base submission did not complete")
-        return KnowledgeBaseSubmission(record, job_id, replayed=False)
+        return KnowledgeBaseSubmission(created_record, job_id, replayed=False)
 
     def get_knowledge_base(
         self,
@@ -308,8 +313,11 @@ class RagPlatform:
             request,
             session_id=self._session_id(principal, resource_id, request.session_id),
         )
+        internal_index_id = record.internal_index_id
+        if internal_index_id is None:
+            raise KnowledgeBaseNotReadyError("knowledge base is not ready")
         try:
-            return self.service.answer(record.internal_index_id, scoped_request)
+            return self.service.answer(internal_index_id, scoped_request)
         except KeyError:
             current = self.catalog.get(principal, resource_id)
             if current.status is not KnowledgeBaseStatus.READY:
@@ -461,7 +469,7 @@ class RagPlatform:
         *,
         idempotency_key: str,
     ) -> JobId:
-        def task(token: CancellationToken):
+        def task(token: CancellationToken) -> Mapping[str, Any]:
             with self._resource_locks.hold(resource_id):
                 return self._indexing.run(
                     principal,

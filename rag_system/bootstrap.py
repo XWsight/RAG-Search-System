@@ -9,14 +9,23 @@ import stat
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
+from rag_system.application import RagApplication
+from rag_system.application_ports import (
+    DocumentStore,
+    IdempotencyRepository,
+    JobExecutor,
+    KnowledgeBaseRepository,
+    KnowledgeService,
+)
 from rag_system.catalog import KnowledgeBaseCatalog
 from rag_system.config import SecretValue, Settings, load_settings
 from rag_system.file_store import TenantFileStore
 from rag_system.index_manager import IndexManager
 from rag_system.idempotency import IdempotencyStore
 from rag_system.jobs import JobManager
+from rag_system.health import HealthProbe, ReadinessMonitor
 from rag_system.metrics import create_operational_metrics
 from rag_system.observability import JsonEventLogger
 from rag_system.platform import RagPlatform
@@ -30,12 +39,13 @@ from rag_system.tenancy import ApiKeyAuthenticator, Principal, TenantId
 @dataclass(frozen=True, slots=True)
 class ProductionRuntime:
     settings: Settings
-    platform: RagPlatform
+    platform: RagApplication
     authenticator: ApiKeyAuthenticator
     principals: tuple[Principal, ...]
     rate_limiter: TokenBucketRateLimiter
     event_logger: JsonEventLogger
     storage_lease: StorageRootLease
+    readiness: ReadinessMonitor
 
     def close(self) -> None:
         try:
@@ -44,17 +54,9 @@ class ProductionRuntime:
             self.storage_lease.close()
 
     def ready(self) -> bool:
-        """Check durable metadata and document storage without loading models."""
+        """Check local dependencies through explicit fail-closed probes."""
 
-        try:
-            if not self.platform.file_store.healthcheck():
-                return False
-            if not self.platform.jobs.healthcheck():
-                return False
-            self.platform.catalog.list(self.principals[0], limit=1, offset=0)
-        except Exception:
-            return False
-        return True
+        return self.readiness.ready()
 
 
 class StorageRootLease:
@@ -62,7 +64,7 @@ class StorageRootLease:
 
     def __init__(self, path: Path) -> None:
         self._path = path
-        self._handle = None
+        self._handle: BinaryIO | None = None
 
     @classmethod
     def acquire(cls, storage_root: Path) -> StorageRootLease:
@@ -109,7 +111,12 @@ class StorageRootLease:
             else:
                 import fcntl
 
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flock = getattr(fcntl, "flock", None)
+                lock_ex = getattr(fcntl, "LOCK_EX", None)
+                lock_nb = getattr(fcntl, "LOCK_NB", None)
+                if not callable(flock) or not isinstance(lock_ex, int) or not isinstance(lock_nb, int):
+                    raise OSError("file locking is unavailable")
+                flock(handle.fileno(), lock_ex | lock_nb)
         except OSError:
             handle.close()
             raise RuntimeError("storage root is already in use by another process") from None
@@ -129,7 +136,11 @@ class StorageRootLease:
             else:
                 import fcntl
 
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                flock = getattr(fcntl, "flock", None)
+                lock_un = getattr(fcntl, "LOCK_UN", None)
+                if not callable(flock) or not isinstance(lock_un, int):
+                    raise OSError("file unlocking is unavailable")
+                flock(handle.fileno(), lock_un)
         finally:
             handle.close()
 
@@ -220,27 +231,34 @@ def build_production_runtime(*, dotenv_path: Path | None = None) -> ProductionRu
     try:
         authenticator, principals = parse_api_credentials(settings.api_keys_json)
         metrics = create_operational_metrics()
+        service: KnowledgeService = build_service_from_settings(settings)
+        catalog: KnowledgeBaseRepository = KnowledgeBaseCatalog(
+            storage_root / "catalog.sqlite3"
+        )
+        file_store: DocumentStore = TenantFileStore(
+            storage_root / "documents",
+            max_file_bytes=settings.max_file_bytes,
+            max_total_bytes=settings.max_tenant_storage_bytes,
+            max_files_per_tenant=settings.max_files_per_tenant,
+        )
+        jobs: JobExecutor = JobManager(
+            max_workers=settings.job_workers,
+            max_jobs=settings.max_jobs,
+            max_jobs_per_tenant=settings.max_jobs_per_tenant,
+            ttl_seconds=settings.job_ttl_seconds,
+        )
+        idempotency: IdempotencyRepository = IdempotencyStore(
+            storage_root / "idempotency.sqlite3",
+            ttl_seconds=24 * 60 * 60,
+            max_records_per_tenant=10_000,
+        )
         platform = RagPlatform(
             settings=settings,
-            service=build_service_from_settings(settings),
-            catalog=KnowledgeBaseCatalog(storage_root / "catalog.sqlite3"),
-            file_store=TenantFileStore(
-                storage_root / "documents",
-                max_file_bytes=settings.max_file_bytes,
-                max_total_bytes=settings.max_tenant_storage_bytes,
-                max_files_per_tenant=settings.max_files_per_tenant,
-            ),
-            jobs=JobManager(
-                max_workers=settings.job_workers,
-                max_jobs=settings.max_jobs,
-                max_jobs_per_tenant=settings.max_jobs_per_tenant,
-                ttl_seconds=settings.job_ttl_seconds,
-            ),
-            idempotency=IdempotencyStore(
-                storage_root / "idempotency.sqlite3",
-                ttl_seconds=24 * 60 * 60,
-                max_records_per_tenant=10_000,
-            ),
+            service=service,
+            catalog=catalog,
+            file_store=file_store,
+            jobs=jobs,
+            idempotency=idempotency,
             metrics=metrics,
         )
         rate_limiter = TokenBucketRateLimiter(
@@ -254,6 +272,14 @@ def build_production_runtime(*, dotenv_path: Path | None = None) -> ProductionRu
             known_secrets=(settings.api_key.reveal(),),
         )
         platform.recover_incomplete(principals)
+        readiness = ReadinessMonitor(
+            (
+                HealthProbe("catalog", lambda: _catalog_ready(catalog, principals[0])),
+                HealthProbe("documents", file_store.healthcheck),
+                HealthProbe("jobs", jobs.healthcheck),
+                HealthProbe("vector", service.index_manager.healthcheck),
+            )
+        )
     except Exception:
         try:
             if platform is not None:
@@ -274,7 +300,13 @@ def build_production_runtime(*, dotenv_path: Path | None = None) -> ProductionRu
         rate_limiter=rate_limiter,
         event_logger=event_logger,
         storage_lease=storage_lease,
+        readiness=readiness,
     )
+
+
+def _catalog_ready(repository: KnowledgeBaseRepository, principal: Principal) -> bool:
+    repository.list(principal, limit=1, offset=0)
+    return True
 
 
 def _strict_object(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:

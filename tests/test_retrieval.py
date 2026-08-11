@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
 from dataclasses import replace
+from pathlib import Path
 
 from rag_system.config import Settings
 from rag_system.domain import Chunk, IndexRef, Route, SearchHit
-from rag_system.retrieval import HybridRetriever, RoutingPolicy
+from rag_system.retrieval import ChromaIndexRepository, HybridRetriever, RoutingPolicy
 
 
 def make_chunk(chunk_id: str, document_id: str, text: str) -> Chunk:
@@ -88,6 +90,23 @@ class RetrievalTests(unittest.TestCase):
 
     def test_empty_query_returns_no_hits(self) -> None:
         self.assertEqual(self.retriever.search("  ", top_k=3), ())
+
+    def test_persistent_repository_healthcheck_validates_storage_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = replace(Settings(), persist_data=True, storage_root=root).validate()
+            repository = ChromaIndexRepository(settings)
+
+            self.assertTrue(repository.healthcheck())
+            vector_directory = root / "vector"
+            vector_directory.rmdir()
+
+            self.assertFalse(repository.healthcheck())
+            self.assertFalse(vector_directory.exists())
+
+            vector_directory.write_text("not a directory", encoding="utf-8")
+
+            self.assertFalse(repository.healthcheck())
 
 
 if __name__ == "__main__":

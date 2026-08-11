@@ -29,6 +29,8 @@
 
 ### Changed
 
+- Refactored platform workflows onto explicit repository, document-store, job-executor, index-lifecycle, and knowledge-service ports. Production readiness now composes fail-closed probes for catalog, document, job, and vector storage; the 26-module architecture spine is protected by strict mypy and dependency-direction gates.
+
 - 本地入口改为模块化的 Gradio 工作台；原始 V1.0 继续保留在 `main` 分支。
 - 云端生成和网络搜索改为请求级显式授权，默认保持关闭。
 - 将供应商无关的回答协议、严格 JSON 解码和稳定错误契约从智谱 HTTP 适配器中分离；应用层不再反向依赖具体 Provider，并用架构测试锁定依赖方向。

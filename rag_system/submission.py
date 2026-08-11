@@ -76,13 +76,17 @@ class UploadBatchPreparer:
             raise PlatformValidationError("display_name must be a string")
         try:
             collection_name = display_name.encode("utf-8")
-            identities = sorted(
-                (
-                    upload.display_name.encode("utf-8"),
-                    hashlib.sha256(bytes(upload.source)).digest(),
+            identities: list[tuple[bytes, bytes]] = []
+            for upload in uploads:
+                if not isinstance(upload.source, (bytes, bytearray, memoryview)):
+                    raise TypeError
+                identities.append(
+                    (
+                        upload.display_name.encode("utf-8"),
+                        hashlib.sha256(bytes(upload.source)).digest(),
+                    )
                 )
-                for upload in uploads
-            )
+            identities.sort()
         except (AttributeError, TypeError, UnicodeError):
             raise PlatformValidationError("upload metadata is invalid") from None
         digest = hashlib.sha256(b"rag-create-request-v1")

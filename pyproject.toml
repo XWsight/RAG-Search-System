@@ -26,6 +26,7 @@ dependencies = [
 dev = [
   "coverage[toml]>=7.15,<8",
   "httpx2>=2.7,<3",
+  "mypy>=2.3,<2.4",
   "pip-audit>=2.10,<3",
   "ruff>=0.15,<0.16",
 ]
@@ -44,6 +45,40 @@ extend-exclude = [".venv", ".venv-test"]
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "B", "UP"]
 ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+follow_imports = "skip"
+show_error_codes = true
+files = [
+  "rag_system/application.py",
+  "rag_system/application_ports.py",
+  "rag_system/assets.py",
+  "rag_system/bootstrap.py",
+  "rag_system/catalog.py",
+  "rag_system/config.py",
+  "rag_system/coordination.py",
+  "rag_system/domain.py",
+  "rag_system/file_store.py",
+  "rag_system/health.py",
+  "rag_system/idempotency.py",
+  "rag_system/index_manager.py",
+  "rag_system/indexing.py",
+  "rag_system/ingestion.py",
+  "rag_system/jobs.py",
+  "rag_system/loaders.py",
+  "rag_system/memory.py",
+  "rag_system/metrics.py",
+  "rag_system/platform.py",
+  "rag_system/ports.py",
+  "rag_system/research.py",
+  "rag_system/retrieval.py",
+  "rag_system/security.py",
+  "rag_system/service.py",
+  "rag_system/submission.py",
+  "rag_system/tenancy.py",
+]
 
 [tool.coverage.run]
 branch = true

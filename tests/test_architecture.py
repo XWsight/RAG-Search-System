@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FRAMEWORK_NEUTRAL_MODULES = (
     "rag_system/application.py",
+    "rag_system/application_ports.py",
     "rag_system/domain.py",
     "rag_system/ports.py",
     "rag_system/grounding.py",
@@ -18,6 +19,7 @@ FRAMEWORK_NEUTRAL_MODULES = (
     "rag_system/coordination.py",
     "rag_system/assets.py",
     "rag_system/indexing.py",
+    "rag_system/health.py",
 )
 FORBIDDEN_FRAMEWORK_PREFIXES = (
     "chromadb",
@@ -62,6 +64,18 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         imports = set(_imports(ROOT / "rag_system/api.py"))
         self.assertEqual(sorted(imports & forbidden), [])
         self.assertIn("rag_system.application", imports)
+
+    def test_platform_depends_on_runtime_ports_not_concrete_adapters(self) -> None:
+        forbidden = {
+            "ChromaIndexRepository",
+            "IdempotencyStore",
+            "JobManager",
+            "KnowledgeBaseCatalog",
+            "RagService",
+            "TenantFileStore",
+        }
+        imported = set(_imported_symbols(ROOT / "rag_system/platform.py"))
+        self.assertEqual(sorted(imported & forbidden), [])
 
     def test_production_modules_have_no_import_cycles(self) -> None:
         modules = {
@@ -110,6 +124,17 @@ def _imports(path: Path) -> tuple[str, ...]:
             result.extend(item.name for item in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             result.append(node.module)
+    return tuple(result)
+
+
+def _imported_symbols(path: Path) -> tuple[str, ...]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    result: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            result.extend(item.asname or item.name.split(".", maxsplit=1)[0] for item in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            result.extend(item.asname or item.name for item in node.names)
     return tuple(result)
 
 

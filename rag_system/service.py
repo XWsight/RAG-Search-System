@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from uuid import uuid4
 
 from rag_system.config import Settings
@@ -46,7 +46,7 @@ class RagService:
         *,
         memory: ConversationMemory | None = None,
         query_planner: QueryPlanner | None = None,
-        timer=time.perf_counter,
+        timer: Callable[[], float] = time.perf_counter,
     ) -> None:
         self.settings = settings.validate()
         self.index_manager = index_manager

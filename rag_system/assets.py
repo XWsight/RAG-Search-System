@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from rag_system.application import PlatformIntegrityError, PlatformValidationError, UploadDocument
+from rag_system.application_ports import DocumentStore
 from rag_system.catalog import DocumentManifest, KnowledgeBaseRecord
-from rag_system.file_store import TenantFileStore
 from rag_system.tenancy import Principal
 
 
@@ -23,9 +23,7 @@ class PlannedDocument:
 class KnowledgeBaseAssets:
     """Own the consistency boundary between catalog manifests and stored files."""
 
-    def __init__(self, file_store: TenantFileStore) -> None:
-        if not isinstance(file_store, TenantFileStore):
-            raise TypeError("file_store must be a TenantFileStore")
+    def __init__(self, file_store: DocumentStore) -> None:
         self._file_store = file_store
 
     def plan(

@@ -280,8 +280,7 @@ def load_settings(*, dotenv_path: Path | None = None) -> Settings:
     try:
         from dotenv import load_dotenv
     except ImportError:
-        load_dotenv = None
+        return Settings().validate()
 
-    if load_dotenv is not None:
-        load_dotenv(dotenv_path=dotenv_path)
+    load_dotenv(dotenv_path=dotenv_path)
     return Settings().validate()

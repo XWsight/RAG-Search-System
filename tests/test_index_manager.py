@@ -44,8 +44,19 @@ class FakeRepository:
         self.deleted_ids.append(index_id)
         return True
 
+    def healthcheck(self) -> bool:
+        return True
+
 
 class IndexManagerTests(unittest.TestCase):
+    def test_healthcheck_reflects_manager_lifecycle(self) -> None:
+        repository = FakeRepository()
+        manager = IndexManager(Settings(), repository)
+
+        self.assertTrue(manager.healthcheck())
+        manager.close()
+        self.assertFalse(manager.healthcheck())
+
     def test_identical_documents_reuse_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             document = Path(directory, "guide.txt")

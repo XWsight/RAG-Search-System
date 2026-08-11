@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import stat
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import Any, Protocol, cast
 
 from rag_system.config import Settings
 from rag_system.domain import Chunk, IndexRef, Route, RouteDecision, SearchHit
@@ -24,13 +26,42 @@ class IndexIntegrityError(RuntimeError):
     """Raised when a persisted collection does not match its manifest."""
 
 
+class _ChromaDocument(Protocol):
+    metadata: Mapping[str, object]
+
+
+class _ChromaStore(Protocol):
+    def similarity_search_with_score(
+        self,
+        query: str,
+        *,
+        k: int,
+    ) -> Sequence[tuple[_ChromaDocument, float]]: ...
+
+    def add_texts(
+        self,
+        *,
+        texts: Sequence[str],
+        ids: Sequence[str],
+        metadatas: Sequence[Mapping[str, object]],
+    ) -> object: ...
+
+    def delete_collection(self) -> None: ...
+
+    def get(self, *, include: Sequence[str]) -> Mapping[str, object]: ...
+
+
+class _ChromaClient(Protocol):
+    def delete_collection(self, name: str) -> None: ...
+
+
 class ChromaVectorIndex:
     """A Chroma collection hidden behind framework-neutral domain objects."""
 
     def __init__(
         self,
         *,
-        store: object,
+        store: _ChromaStore,
         index_ref: IndexRef,
         chunks: Sequence[Chunk],
         persistent: bool,
@@ -110,6 +141,8 @@ class ChromaIndexRepository(IndexRepository):
         self._embedding_function: object | None = None
         self._lock = threading.RLock()
         self._inference_lock = threading.RLock()
+        if self.settings.persist_data:
+            self._ensure_persistence_directory()
 
     def _embeddings(self) -> object:
         with self._lock:
@@ -192,14 +225,40 @@ class ChromaIndexRepository(IndexRepository):
             raise DependencyUnavailableError("missing chromadb dependency") from error
 
         directory = self._persistence_directory()
-        client = chromadb.PersistentClient(path=str(directory))
+        client = cast(_ChromaClient, chromadb.PersistentClient(path=str(directory)))
         try:
             client.delete_collection(self._collection_name(index_id))
         except NotFoundError:
             return False
         return True
 
-    def _new_store(self, chroma_type: type, collection_name: str) -> object:
+    def healthcheck(self) -> bool:
+        """Validate the local vector directory without opening a collection."""
+
+        if not self.settings.persist_data:
+            return True
+        try:
+            storage_root = self.settings.storage_root.expanduser().resolve(strict=True)
+            directory = self._persistence_directory()
+            metadata = directory.lstat()
+            reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            attributes = getattr(metadata, "st_file_attributes", 0)
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or stat.S_ISLNK(metadata.st_mode)
+                or bool(attributes & reparse_flag)
+            ):
+                return False
+            directory.resolve(strict=True).relative_to(storage_root)
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return True
+
+    def _new_store(
+        self,
+        chroma_factory: Callable[..., Any],
+        collection_name: str,
+    ) -> _ChromaStore:
         options: dict[str, object] = {
             "collection_name": collection_name,
             "embedding_function": self._embeddings(),
@@ -207,10 +266,13 @@ class ChromaIndexRepository(IndexRepository):
         }
         if self.settings.persist_data:
             options["persist_directory"] = str(self._persistence_directory())
-        return chroma_type(**options)
+        return cast(_ChromaStore, chroma_factory(**options))
 
     def _persistence_directory(self) -> Path:
-        directory = self.settings.storage_root.expanduser().resolve() / "vector"
+        return self.settings.storage_root.expanduser().resolve() / "vector"
+
+    def _ensure_persistence_directory(self) -> Path:
+        directory = self._persistence_directory()
         directory.mkdir(parents=True, exist_ok=True)
         return directory
 
@@ -219,7 +281,7 @@ class ChromaIndexRepository(IndexRepository):
         return f"rag_{index_id.replace('-', '_')}"
 
     @staticmethod
-    def _existing_ids(store: object) -> set[str]:
+    def _existing_ids(store: _ChromaStore) -> set[str]:
         result = store.get(include=[])
         if not isinstance(result, dict):
             raise IndexIntegrityError("persisted index returned an invalid manifest")
@@ -365,9 +427,10 @@ class RoutingPolicy:
             lexical_score / self.settings.routing_lexical_saturation,
         )
         supported_agreement = ranker_agreement * lexical_support
-        return min(
+        confidence = min(
             1.0,
             0.75 * top_score
             + 0.15 * supported_agreement
             + 0.10 * min(1.0, margin * 4),
         )
+        return float(confidence)

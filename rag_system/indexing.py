@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from rag_system.application import (
     KnowledgeBaseNotReadyError,
     PlatformIntegrityError,
     PlatformUnavailableError,
 )
+from rag_system.application_ports import KnowledgeBaseRepository, KnowledgeService
 from rag_system.assets import KnowledgeBaseAssets
 from rag_system.catalog import (
-    KnowledgeBaseCatalog,
     KnowledgeBaseErrorCode,
     KnowledgeBaseRecord,
     KnowledgeBaseStatus,
@@ -22,9 +20,6 @@ from rag_system.metrics import OperationalMetrics
 from rag_system.security import DocumentValidationError
 from rag_system.tenancy import Principal
 
-if TYPE_CHECKING:
-    from rag_system.service import RagService
-
 
 class KnowledgeBaseIndexer:
     """Build an index while keeping catalog state and cleanup semantics coherent."""
@@ -32,8 +27,8 @@ class KnowledgeBaseIndexer:
     def __init__(
         self,
         *,
-        service: RagService,
-        catalog: KnowledgeBaseCatalog,
+        service: KnowledgeService,
+        catalog: KnowledgeBaseRepository,
         assets: KnowledgeBaseAssets,
         metrics: OperationalMetrics,
     ) -> None:

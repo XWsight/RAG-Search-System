@@ -62,6 +62,7 @@ git diff --check
 - 文件系统测试使用临时目录；不得删除开发者仓库、home 或广泛匹配路径。
 - API 测试使用注入的应用端口、authenticator 和 provider，不依赖具体 `RagPlatform`，也不调用真实模型或搜索服务。
 - `api.py` 只能依赖 `application.py` 暴露的用例端口，不得直接导入 platform、catalog、file store、job manager 或模型供应商；`test_architecture.py` 会检查该方向以及生产模块导入环。
+- 平台工作流必须依赖 `application_ports.py` 的稳定端口，具体 SQLite、文件系统、任务执行器和向量实现只能在 `bootstrap.py` 组合根装配。CI 会对这条 26 模块的架构主干执行严格 mypy 检查；新增地基模块必须加入 `[tool.mypy].files`，不得用宽泛 ignore 绕过。
 - 时间相关组件注入 fake clock，任务并发测试必须有有界等待，避免 sleep 驱动的脆弱断言。
 - SQLite/持久索引变更覆盖重启、部分写入、重复请求、外租户访问和删除恢复。
 

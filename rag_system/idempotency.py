@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
+from typing import cast
 
 from .tenancy import Principal, TenantId
 
@@ -526,13 +527,16 @@ class IdempotencyStore:
         operation: str,
         key_hash: str,
     ) -> sqlite3.Row | None:
-        return connection.execute(
-            """
-            SELECT * FROM idempotency_entries
-            WHERE tenant_id = ? AND operation = ? AND key_hash = ?
-            """,
-            (tenant_id.value, operation, key_hash),
-        ).fetchone()
+        return cast(
+            sqlite3.Row | None,
+            connection.execute(
+                """
+                SELECT * FROM idempotency_entries
+                WHERE tenant_id = ? AND operation = ? AND key_hash = ?
+                """,
+                (tenant_id.value, operation, key_hash),
+            ).fetchone(),
+        )
 
     @staticmethod
     def _select_reservation(
@@ -540,13 +544,16 @@ class IdempotencyStore:
         tenant_id: TenantId,
         reservation_id: str,
     ) -> sqlite3.Row | None:
-        return connection.execute(
-            """
-            SELECT * FROM idempotency_entries
-            WHERE reservation_id = ? AND tenant_id = ?
-            """,
-            (reservation_id, tenant_id.value),
-        ).fetchone()
+        return cast(
+            sqlite3.Row | None,
+            connection.execute(
+                """
+                SELECT * FROM idempotency_entries
+                WHERE reservation_id = ? AND tenant_id = ?
+                """,
+                (reservation_id, tenant_id.value),
+            ).fetchone(),
+        )
 
     @staticmethod
     def _purge_expired(connection: sqlite3.Connection, now: float) -> int:

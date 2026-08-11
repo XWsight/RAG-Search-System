@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from threading import RLock
-from typing import Any
+from typing import Any, cast
 
 from .tenancy import Principal, TenantId
 
@@ -534,10 +534,13 @@ class KnowledgeBaseCatalog:
         tenant_id: TenantId,
         resource_id: str,
     ) -> sqlite3.Row | None:
-        return connection.execute(
-            "SELECT * FROM knowledge_bases WHERE resource_id = ? AND tenant_id = ?",
-            (resource_id, tenant_id.value),
-        ).fetchone()
+        return cast(
+            sqlite3.Row | None,
+            connection.execute(
+                "SELECT * FROM knowledge_bases WHERE resource_id = ? AND tenant_id = ?",
+                (resource_id, tenant_id.value),
+            ).fetchone(),
+        )
 
     def _now(self) -> float:
         value = float(self._clock())

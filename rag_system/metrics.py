@@ -7,7 +7,7 @@ import re
 import threading
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, TypeVar
 
 
 _METRIC_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -83,12 +83,9 @@ def _validate_help(help_text: str) -> str:
 
 
 def _finite_number(value: object, *, name: str) -> float:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise MetricValidationError(f"{name} must be a finite number")
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        raise MetricValidationError(f"{name} must be a finite number") from None
+    numeric = float(value)
     if not math.isfinite(numeric):
         raise MetricValidationError(f"{name} must be a finite number")
     return numeric
@@ -202,10 +199,24 @@ class _Metric:
 class Counter(_Metric):
     metric_type = "counter"
 
-    def __init__(self, name: str, help_text: str, **kwargs: object) -> None:
+    def __init__(
+        self,
+        name: str,
+        help_text: str,
+        *,
+        label_names: Sequence[str] = (),
+        max_series: int = 100,
+        allowed_label_values: Mapping[str, Collection[str]] | None = None,
+    ) -> None:
         if not name.endswith("_total"):
             raise MetricValidationError("counter names must end with _total")
-        super().__init__(name, help_text, **kwargs)
+        super().__init__(
+            name,
+            help_text,
+            label_names=label_names,
+            max_series=max_series,
+            allowed_label_values=allowed_label_values,
+        )
         self._series: dict[tuple[str, ...], float] = {}
 
     def increment(self, amount: float = 1.0, *, labels: Mapping[str, str] | None = None) -> None:
@@ -246,8 +257,22 @@ class Counter(_Metric):
 class Gauge(_Metric):
     metric_type = "gauge"
 
-    def __init__(self, name: str, help_text: str, **kwargs: object) -> None:
-        super().__init__(name, help_text, **kwargs)
+    def __init__(
+        self,
+        name: str,
+        help_text: str,
+        *,
+        label_names: Sequence[str] = (),
+        max_series: int = 100,
+        allowed_label_values: Mapping[str, Collection[str]] | None = None,
+    ) -> None:
+        super().__init__(
+            name,
+            help_text,
+            label_names=label_names,
+            max_series=max_series,
+            allowed_label_values=allowed_label_values,
+        )
         self._series: dict[tuple[str, ...], float] = {}
 
     def set(self, value: float, *, labels: Mapping[str, str] | None = None) -> None:
@@ -320,9 +345,17 @@ class Histogram(_Metric):
         help_text: str,
         *,
         buckets: Sequence[float],
-        **kwargs: object,
+        label_names: Sequence[str] = (),
+        max_series: int = 100,
+        allowed_label_values: Mapping[str, Collection[str]] | None = None,
     ) -> None:
-        super().__init__(name, help_text, **kwargs)
+        super().__init__(
+            name,
+            help_text,
+            label_names=label_names,
+            max_series=max_series,
+            allowed_label_values=allowed_label_values,
+        )
         if not buckets or len(buckets) > _MAX_BUCKETS:
             raise MetricValidationError("histograms need between 1 and 50 buckets")
         normalized = tuple(_finite_number(value, name="histogram bucket") for value in buckets)
@@ -399,6 +432,9 @@ class Histogram(_Metric):
             self._series.clear()
 
 
+MetricT = TypeVar("MetricT", bound=_Metric)
+
+
 class MetricRegistry:
     """Own a bounded set of metrics and export deterministic snapshots."""
 
@@ -417,11 +453,45 @@ class MetricRegistry:
         self._exported_names: set[str] = set()
         self._lock = threading.RLock()
 
-    def counter(self, name: str, help_text: str, **kwargs: object) -> Counter:
-        return self._register(Counter(name, help_text, **self._bounded_kwargs(kwargs)))
+    def counter(
+        self,
+        name: str,
+        help_text: str,
+        *,
+        label_names: Sequence[str] = (),
+        max_series: int = 100,
+        allowed_label_values: Mapping[str, Collection[str]] | None = None,
+    ) -> Counter:
+        self._validate_series_limit(max_series)
+        return self._register(
+            Counter(
+                name,
+                help_text,
+                label_names=label_names,
+                max_series=max_series,
+                allowed_label_values=allowed_label_values,
+            )
+        )
 
-    def gauge(self, name: str, help_text: str, **kwargs: object) -> Gauge:
-        return self._register(Gauge(name, help_text, **self._bounded_kwargs(kwargs)))
+    def gauge(
+        self,
+        name: str,
+        help_text: str,
+        *,
+        label_names: Sequence[str] = (),
+        max_series: int = 100,
+        allowed_label_values: Mapping[str, Collection[str]] | None = None,
+    ) -> Gauge:
+        self._validate_series_limit(max_series)
+        return self._register(
+            Gauge(
+                name,
+                help_text,
+                label_names=label_names,
+                max_series=max_series,
+                allowed_label_values=allowed_label_values,
+            )
+        )
 
     def histogram(
         self,
@@ -429,21 +499,29 @@ class MetricRegistry:
         help_text: str,
         *,
         buckets: Sequence[float],
-        **kwargs: object,
+        label_names: Sequence[str] = (),
+        max_series: int = 100,
+        allowed_label_values: Mapping[str, Collection[str]] | None = None,
     ) -> Histogram:
-        bounded = self._bounded_kwargs(kwargs)
-        return self._register(Histogram(name, help_text, buckets=buckets, **bounded))
+        self._validate_series_limit(max_series)
+        return self._register(
+            Histogram(
+                name,
+                help_text,
+                buckets=buckets,
+                label_names=label_names,
+                max_series=max_series,
+                allowed_label_values=allowed_label_values,
+            )
+        )
 
-    def _bounded_kwargs(self, kwargs: Mapping[str, object]) -> dict[str, object]:
-        result = dict(kwargs)
-        requested = result.get("max_series", 100)
-        if not isinstance(requested, int) or isinstance(requested, bool):
+    def _validate_series_limit(self, requested: int) -> None:
+        if not isinstance(requested, int) or isinstance(requested, bool) or requested < 1:
             raise MetricValidationError("max_series must be a positive integer")
         if requested > self.max_series_per_metric:
             raise MetricValidationError("max_series exceeds the registry limit")
-        return result
 
-    def _register(self, metric: _Metric):
+    def _register(self, metric: MetricT) -> MetricT:
         exported = {metric.name}
         if isinstance(metric, Histogram):
             exported.update(

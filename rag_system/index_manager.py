@@ -191,6 +191,17 @@ class IndexManager:
             ready = self._stage_close(managed_indexes)
         self._close_many(ready)
 
+    def healthcheck(self) -> bool:
+        """Verify the manager and backing repository without loading a model."""
+
+        with self._lock:
+            if self._closed:
+                return False
+        try:
+            return self.repository.healthcheck() is True
+        except Exception:
+            return False
+
     def stats(self) -> dict[str, int]:
         with self._lock:
             managed_indexes = (*self._indexes.values(), *self._retiring.values())

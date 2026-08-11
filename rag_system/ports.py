@@ -45,6 +45,8 @@ class IndexRepository(Protocol):
 
     def delete(self, index_id: str) -> bool: ...
 
+    def healthcheck(self) -> bool: ...
+
 
 class ChatModel(Protocol):
     @property
