@@ -107,7 +107,11 @@ class StorageRootLease:
             if os.name == "nt":
                 import msvcrt
 
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                locking = getattr(msvcrt, "locking", None)
+                lock_nonblocking = getattr(msvcrt, "LK_NBLCK", None)
+                if not callable(locking) or not isinstance(lock_nonblocking, int):
+                    raise OSError("file locking is unavailable")
+                locking(handle.fileno(), lock_nonblocking, 1)
             else:
                 import fcntl
 
@@ -132,7 +136,11 @@ class StorageRootLease:
             if os.name == "nt":
                 import msvcrt
 
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                locking = getattr(msvcrt, "locking", None)
+                unlock = getattr(msvcrt, "LK_UNLCK", None)
+                if not callable(locking) or not isinstance(unlock, int):
+                    raise OSError("file unlocking is unavailable")
+                locking(handle.fileno(), unlock, 1)
             else:
                 import fcntl
 

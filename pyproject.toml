@@ -80,6 +80,17 @@ files = [
   "rag_system/tenancy.py",
 ]
 
+[[tool.mypy.overrides]]
+module = [
+  "chromadb",
+  "chromadb.*",
+  "dotenv",
+  "langchain_chroma",
+  "langchain_huggingface",
+  "pypdf",
+]
+ignore_missing_imports = true
+
 [tool.coverage.run]
 branch = true
 source = ["rag_system"]
