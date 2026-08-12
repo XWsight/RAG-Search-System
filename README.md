@@ -307,4 +307,4 @@ tests/                # 单元、隔离、并发、故障与 API 契约测试
 
 ## 贡献与许可
 
-版本变化见 [CHANGELOG.md](CHANGELOG.md)，贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。本仓库目前尚未选择开源许可证；在许可证明确前，请不要假设获得复制、修改或再分发授权。
+版本变化见 [CHANGELOG.md](CHANGELOG.md)，贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。本项目使用 [MIT 许可证](LICENSE)。
