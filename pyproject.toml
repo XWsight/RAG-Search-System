@@ -106,6 +106,6 @@ branch = true
 source = ["rag_system"]
 
 [tool.coverage.report]
-fail_under = 65
+fail_under = 80
 show_missing = true
 skip_covered = true
