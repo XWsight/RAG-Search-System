@@ -1,10 +1,10 @@
 # RAG Studio
 
-[![quality](https://github.com/XWsight/RAG-Search-System/actions/workflows/quality.yml/badge.svg?branch=rag-studio)](https://github.com/XWsight/RAG-Search-System/actions/workflows/quality.yml?query=branch%3Arag-studio)
+[![quality](https://github.com/XWsight/RAG-Search-System/actions/workflows/quality.yml/badge.svg?branch=main)](https://github.com/XWsight/RAG-Search-System/actions/workflows/quality.yml?query=branch%3Amain)
 
 面向中文知识库的隐私优先 RAG 系统：支持安全的多格式文档导入、向量与 BM25 混合检索、RRF 融合、可选重排序、证据路由、联网补充、带引用回答和有预算上限的研究模式。
 
-仓库提供三个入口：面向普通用户的同源 Web 工作台、适合本地实验的 Gradio 工作台，以及具备租户隔离、鉴权、后台索引任务、持久化目录、限流、指标和安全错误协议的 FastAPI 服务。`main` 保留原始 V1.0；当前增强版位于 `rag-studio` 分支。
+仓库提供三个入口：面向普通用户的同源 Web 工作台、适合本地实验的 Gradio 工作台，以及具备租户隔离、鉴权、后台索引任务、持久化目录、限流、指标和安全错误协议的 FastAPI 服务。当前完整增强版位于 `main` 分支。
 
 Web 工作台覆盖知识库创建、异步索引进度、知识库切换与删除、多轮问答、引用证据、检索路径，以及云端生成和联网搜索的请求级授权。访问密钥只保存在当前浏览器标签会话中，不会写入仓库或持久化到浏览器长期存储。
 
@@ -53,7 +53,7 @@ flowchart LR
 ```powershell
 git clone https://github.com/XWsight/RAG-Search-System.git
 cd RAG-Search-System
-git switch rag-studio
+git switch main
 
 py -3.11 -m venv .venv
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
